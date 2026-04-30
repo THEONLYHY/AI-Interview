@@ -44,4 +44,4 @@ Thumbs.db
 .env.*
 config.local.json
 secrets.json
-EOF
+EOFconfig/local_config.json

@@ -1,0 +1,33 @@
+
+{
+    "ws": {
+        "base_url": "wss://openspeech.bytedance.com/api/v3/realtime/dialogue",
+        "headers": {
+            "X-Api-App-ID": "你的飞书App ID",
+            "X-Api-Access-Key": "你的飞书Access Token",
+            "X-Api-Resource-Id": "volc.speech.dialog",
+            "X-Api-App-Key": "你的飞书App Key",
+            "X-Api-Connect-Id": ""
+        }
+    },
+    "tts": {
+        "speaker": "zh_male_yunzhou_jupiter_bigtts",
+        "channel": 1,
+        "format": "pcm",
+        "sample_rate": 24000
+    },
+    "asr": {
+        "end_smooth_window_ms": 2000,
+        "vad_silence_duration": 2500,
+        "vad_speech_trigger_duration": 400
+    },
+
+    "llm": {
+        "api_url": "https://api.tokenpony.cn/v1/chat/completions",
+        "api_key": "sk-aac063355dc94a0894ac1c375a9bb19c",
+        "model": "qwen3-8b",
+        "temperature": 0.3,
+        "max_tokens": 32000,
+        "timeout_seconds": 60
+    }
+}
