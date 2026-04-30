@@ -1,0 +1,9 @@
+{
+  "name": "ai-interview",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "nlohmann-json",
+    "spdlog"
+  ],
+  "builtin-baseline": "63bb8e44c140791580201d29c0c16985a88969cf"
+}
