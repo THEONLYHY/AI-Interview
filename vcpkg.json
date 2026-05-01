@@ -1,9 +1,54 @@
 {
   "name": "ai-interview",
-  "version-string": "0.1.0",
+  "version": "1.0.0",
+  "description": "C++ Technical Interview System with Real-time Audio Dialog (Qt GUI)",
   "dependencies": [
+    "openssl",
+    "boost-system",
+    "boost-thread",
+    "boost-asio",
+    "boost-beast",
     "nlohmann-json",
-    "spdlog"
+    "zlib",
+    "portaudio",
+    "curl",
+    "podofo",
+    "spdlog",
+    "qtbase"
+  ],
+  "overrides": [
+    {
+      "name": "openssl",
+      "version": "3.6.0"
+    },
+    {
+      "name": "nlohmann-json",
+      "version": "3.12.0"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.1"
+    },
+    {
+      "name": "portaudio",
+      "version": "19.7"
+    },
+    {
+      "name": "curl",
+      "version": "8.16.0"
+    },
+    {
+      "name": "podofo",
+      "version": "1.0.2#1"
+    },
+    {
+      "name": "spdlog",
+      "version": "1.16.0"
+    },
+    {
+      "name": "qtbase",
+      "version": "6.9.1"
+    }
   ],
   "builtin-baseline": "63bb8e44c140791580201d29c0c16985a88969cf"
 }
