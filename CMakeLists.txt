@@ -36,7 +36,7 @@ set(SERVICES_SOURCES
 )
 
 set(MAIN_SOURCES
-    src/main.cc
+    src/dialog_session_demo_main.cc
 )
 
 
