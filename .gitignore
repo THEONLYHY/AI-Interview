@@ -45,3 +45,4 @@ Thumbs.db
 config.local.json
 secrets.json
 EOFconfig/local_config.json
+config/local_config.json
