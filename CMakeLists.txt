@@ -16,6 +16,9 @@ endif()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
+find_package(CURL REQUIRED)
+
+
 
 set(PROJECT_INCLUDE_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -23,6 +26,7 @@ set(PROJECT_INCLUDE_DIR
 
 set(COMMON_SOURCES
     src/common/logger.cc
+    src/common/config.cc
 )
 
 
@@ -33,6 +37,7 @@ set(INTERVIEW_SOURCES
 
 set(SERVICES_SOURCES
     src/services/mock_llm_client.cc
+    src/services/real_llm_client.cc
 )
 
 set(MAIN_SOURCES
@@ -58,7 +63,9 @@ target_link_libraries(ai_interview
         nlohmann_json::nlohmann_json
         spdlog::spdlog
         Boost::system
+        CURL::libcurl
 )
+
 
 #警告选项
 if(MSVC)

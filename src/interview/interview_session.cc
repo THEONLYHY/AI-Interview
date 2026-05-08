@@ -7,7 +7,7 @@ InterviewSession::InterviewSession(std::unique_ptr<LLMClient> llm_client)
 }
 
 void InterviewSession::Start() {
-    questions_ = llm_client_->GenerateQuestions();
+    questions_ = llm_client_->GenerateQuestions("", "", 3);
 
     current_index_ = 0;
     started_ = true;
@@ -32,7 +32,7 @@ Question InterviewSession::GetCurrentQuestion() const {
 // 3. 保存本次回答记录，并根据评分结果决定是否设置追问
 EvaluateResult InterviewSession::SubmitAnswer(const std::string& answer) {
     Question current_question = GetCurrentQuestion();
-    EvaluateResult result = llm_client_->EvaluateAnswer(current_question, answer);
+    EvaluateResult result = llm_client_->EvaluateAnswer(current_question, answer, records_);
 
     AnswerRecord record;
     record.question_id = current_question.id;
@@ -71,7 +71,7 @@ Question InterviewSession::GetPendingFollowupQuestion() const {
 EvaluateResult InterviewSession::SubmitFollowupAnswer(const std::string& answer) {
     Question followup_question = GetPendingFollowupQuestion();
 
-    EvaluateResult result = llm_client_->EvaluateAnswer(followup_question, answer);
+    EvaluateResult result = llm_client_->EvaluateAnswer(followup_question, answer, records_);
 
     AnswerRecord record;
     record.question_id = followup_question.parent_question_id;
@@ -81,7 +81,7 @@ EvaluateResult InterviewSession::SubmitFollowupAnswer(const std::string& answer)
     record.need_followup = false;
     record.followup_question.clear();
     record.is_followup_answer = true;
-
+    records_.push_back(record);
     return result;
 }
 

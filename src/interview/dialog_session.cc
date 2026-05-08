@@ -42,7 +42,7 @@ void DialogSession::Run() {
             std::string followup_answer;
             std::getline(std::cin, followup_answer);
 
-            OnFollowupAnswewr(answer);
+            OnFollowupAnswewr(followup_answer);
 
             if (!is_running_) {
                 break;
@@ -58,11 +58,6 @@ void DialogSession::Run() {
 }
 
 void DialogSession::Stop() {
-    if (!is_running_) {
-        LOG_INFO("dialog session already stopped");
-        SetState(DialogState::kStopped);
-        return;
-    }
     is_running_ = false;
     SetState(DialogState::kStopped);
     LOG_INFO("dialog session stopped");

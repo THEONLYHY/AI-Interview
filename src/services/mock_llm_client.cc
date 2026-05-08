@@ -2,16 +2,37 @@
 
 #include <sstream>
 
-std::vector<Question> MockLLMClient::GenerateQuestions() {
-    return {
+// 生成固定主问题列表。
+// 第三阶段接口已经支持 resume_text、job_description 和 question_count，
+// 但 mock 实现里先不使用前两个参数，只根据 question_count 截取固定题目。
+std::vector<Question> MockLLMClient::GenerateQuestions(
+    const std::string& resume_text,
+    const std::string& job_description,
+    int question_count) {
+
+    (void)resume_text;
+    (void)job_description;
+
+    std::vector<Question> questions = {
         {1, "请介绍一下 RAII", false, -1},
         {2, "请说一下智能指针的作用", false, -1},
         {3, "请解释 epoll 和 select 的区别", false, -1}
     };
+
+    if (question_count <= 0 ||
+        question_count >= static_cast<int>(questions.size())) {
+        return questions;
+    }
+    return std::vector<Question>(questions.begin(), questions.begin() + question_count);
 }
 
-EvaluateResult MockLLMClient::EvaluateAnswer(const Question& question, 
-                                        const std::string& answer) {
+// 对用户回答做简单评估。
+// 第三阶段接口加入了 history 参数，用于真实 LLM 上下文；
+// mock 版本里暂时忽略 history，继续按回答长度做简单评分。
+EvaluateResult MockLLMClient::EvaluateAnswer(
+    const Question& question,
+    const std::string& answer,
+    const std::vector<AnswerRecord>& history) {
     EvaluateResult result;
 
     if (answer.size() < 10) {
