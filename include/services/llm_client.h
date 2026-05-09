@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "common/protocol.h"
+#include "common/interview_types.h"
 
 
 class LLMClient {

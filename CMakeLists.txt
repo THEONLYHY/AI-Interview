@@ -27,6 +27,7 @@ set(PROJECT_INCLUDE_DIR
 set(COMMON_SOURCES
     src/common/logger.cc
     src/common/config.cc
+    src/common/protocol.cc
 )
 
 
@@ -41,7 +42,7 @@ set(SERVICES_SOURCES
 )
 
 set(MAIN_SOURCES
-    src/dialog_session_demo_main.cc
+    src/protocol_demo_main.cc
 )
 
 

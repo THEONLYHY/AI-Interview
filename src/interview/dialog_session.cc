@@ -1,4 +1,5 @@
 #include "interview/dialog_session.h"
+#include "common/interview_types.h"
 #include "common/logger.h"
 
 #include <iostream>

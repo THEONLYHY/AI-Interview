@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 
-#include "common/protocol.h"
+#include "common/interview_types.h"
 #include "services/llm_client.h"
 
 // 1. 启动面试并初始化题目
