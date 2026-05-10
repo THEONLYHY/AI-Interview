@@ -1,6 +1,10 @@
 #ifndef COMMON_DIALOG_STATE_H
 #define COMMON_DIALOG_STATE_H
 
+#include <string>
+
+namespace interview::common {
+
 enum class DialogState {
     kInit = 0,
     kConnecting,
@@ -38,5 +42,7 @@ inline std::string DialogStateToString(DialogState state) {
             return "UnknownState";
     }
 }
+
+}  // namespace interview::common
 
 #endif //COMMON_DIALOG_STATE_H

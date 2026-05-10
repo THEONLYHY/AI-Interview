@@ -1,7 +1,5 @@
 #include "services/real_llm_client.h"
 
-#include "common/logger.h"
-
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 
@@ -9,6 +7,14 @@
 #include <string>
 #include <vector>
 #include <utility>
+
+#include "common/logger.h"
+
+namespace interview::services {
+
+using interview::common::AnswerRecord;
+using interview::common::EvaluateResult;
+using interview::common::Question;
 
 namespace {
 
@@ -34,7 +40,7 @@ std::vector<Question> BuildDefaultQuestions(int question_count) {
     return std::vector<Question>(questions.begin(),
                                  questions.begin() + question_count);
 }
-}
+}  // namespace
 
 RealLLMClient::RealLLMClient(std::string api_url,
                              std::string api_key,
@@ -58,116 +64,11 @@ std::vector<Question> RealLLMClient::GenerateQuestions(
     const std::string& resume_text,
     const std::string& job_description,
     int question_count) {
-    std::string prompt = BuildQuestionsPrompt(resume_text, job_description, question_count);
+    (void)resume_text;
+    (void)job_description;
 
-    std::string response_text = CallModel(prompt);
-
-    if (response_text.empty()) {
-        return BuildDefaultQuestions(question_count);
-    }
-
-    std::vector<Question> questions = ParseQuestions(response_text);
-
-    if (questions.empty()) {
-        return BuildDefaultQuestions(question_count);
-    }
-
-    return questions;
+    return BuildDefaultQuestions(question_count);
 }
-
-// 构造题目生成 prompt。
-// 目标：
-// 1. 让模型按指定数量生成题目
-// 2. 让模型返回严格 JSON
-// 3. 当前即使 resume_text / job_description 为空，也能正常生成题目
-std::string RealLLMClient::BuildQuestionsPrompt(
-    const std::string& resume_text,
-    const std::string& job_description,
-    int question_count) const {
-    std::ostringstream oss;
-
-    oss << "你是一个严格的技术面试官。\n";
-    oss << "请根据候选人的简历信息、岗位描述和技术方向，生成面试主问题。\n";
-    oss << "你必须返回 JSON，不能返回额外解释。\n\n";
-
-    oss << "输出 JSON 格式如下：\n";
-    oss << "{\n";
-    oss << "  \"questions\": [\n";
-    oss << "    {\n";
-    oss << "      \"id\": 1,\n";
-    oss << "      \"text\": \"请介绍一下 RAII\"\n";
-    oss << "    }\n";
-    oss << "  ]\n";
-    oss << "}\n\n";
-
-    oss << "要求：\n";
-    oss << "1. 生成 " << question_count << " 道主问题。\n";
-    oss << "2. 题目应偏向 C++ / 网络编程 / 系统编程 / 项目表达。\n";
-    oss << "3. 题目要适合技术面试，不要生成无关闲聊问题。\n";
-    oss << "4. questions 数组中的每道题都要包含 id 和 text 字段。\n";
-    oss << "5. text 必须是中文问题。\n\n";
-
-    oss << "候选人简历信息：\n";
-    if (resume_text.empty()) {
-        oss << "无\n";
-    } else {
-        oss << resume_text << "\n";
-    }
-    oss << "\n";
-
-    oss << "岗位描述：\n";
-    if (job_description.empty()) {
-        oss << "无\n";
-    } else {
-        oss << job_description << "\n";
-    }
-    oss << "\n";
-
-    // 当简历和 JD 都为空时，给模型一个默认技术方向，避免它发散。
-    oss << "默认技术方向：C++、Linux、网络编程基础。\n";
-
-    return oss.str();
-}
-
-std::vector<Question> RealLLMClient::ParseQuestions(
-    const std::string& response_text) const {
-    try {
-        nlohmann::json json = nlohmann::json::parse(response_text);
-
-        // 如果没有 questions 字段，或者不是数组，直接返回空。
-        if (!json.contains("questions") || !json["questions"].is_array()) {
-            return {};
-        }
-        std::vector<Question> questions;
-        const nlohmann::json& questions_json = json["questions"];
-
-        for (std::size_t i = 0; i < questions_json.size(); ++i) {
-            const nlohmann::json& item = questions_json[i];
-
-            // text 是必须字段。
-            // 如果 text 不存在或不是字符串，就跳过这一题。
-            if (!item.contains("text") || !item["text"].is_string()) {
-                continue;
-            }
-            Question question;
-
-            question.id = item.value("id", static_cast<int>(i + 1));
-
-            question.text = item["text"].get<std::string>();
-            question.is_followup = false;
-            question.parent_question_id = -1;
-
-            if (!question.text.empty()) {
-                questions.push_back(question);
-            }
-        }
-        return questions;
-    } catch (...) {
-        return {};
-    }
-
-}
-
 
 // 评估回答。
 // 这是第三阶段最推荐优先接入真实能力的接口。
@@ -189,13 +90,7 @@ EvaluateResult RealLLMClient::EvaluateAnswer(
 // 等真实评分稳定后再切到真实总结生成。
 std::string RealLLMClient::GenerateSummary(
     const std::vector<AnswerRecord>& records) {
-    std::string prompt = BuildSummaryPrompt(records);
-    std::string response_text = CallModel(prompt);
-
-    if (response_text.empty()) {
-        return BuildFallbackSummary(records);
-    }
-    return response_text;
+    return BuildFallbackSummary(records);
 }
 
 
@@ -250,43 +145,6 @@ std::string RealLLMClient::BuildEvaluatePrompt(
     return oss.str();
 }
 
-std::string RealLLMClient::BuildSummaryPrompt(
-        const std::vector<AnswerRecord>& records) const {
-    std::ostringstream oss;
-
-    oss << "你是一个严格的技术面试官。\n";
-    oss << "请根据下面的整场面试记录，输出一段中文总结。\n";
-    oss << "总结内容应包含：\n";
-    oss << "1. 整体表现评价\n";
-    oss << "2. 回答中的优点\n";
-    oss << "3. 回答中的不足\n";
-    oss << "4. 后续改进建议\n\n";
-
-    oss << "要求：\n";
-    oss << "1. 输出简洁、自然、专业。\n";
-    oss << "2. 不要输出 JSON。\n";
-    oss << "3. 不要重复逐题复述内容。\n\n";
-
-    oss << "面试记录如下：\n";
-    if (records.empty()) {
-        oss << "无记录。\n";
-        return oss.str();
-    }
-
-    for (std::size_t i = 0; i < records.size(); ++i) {
-        oss << "记录 " << (i + 1) << ":\n";
-        oss << "题目: " << records[i].question_text << "\n";
-        oss << "回答: " << records[i].answer_text << "\n";
-        oss << "分数: " << records[i].score << "\n";
-        oss << "是否为追问回答: "
-            << (records[i].is_followup_answer ? "true" : "false") << "\n";
-        oss << "反馈追问标记: "
-            << (records[i].need_followup ? "true" : "false") << "\n\n";
-    }
-
-    return oss.str();
-}
-
 
 // 解析模型返回结果。
 // 第三阶段推荐让模型直接返回 JSON，
@@ -305,12 +163,6 @@ EvaluateResult RealLLMClient::ParseEvaluateResult(const std::string& response_te
         if (!result.need_followup) {
             result.followup_question.clear();
         }
-
-        // 如果模型表示需要追问，但没有给出有效追问内容，
-        // 为了避免出现“空追问”，这里直接关闭追问。
-        if (result.need_followup && result.followup_question.empty()) {
-            result.need_followup = false;
-        }
         return result;
     } catch (...) {
         return BuildFallbackEvaluateResult();
@@ -324,39 +176,23 @@ EvaluateResult RealLLMClient::ParseEvaluateResult(const std::string& response_te
 //   失败时返回空字符串，由上层走 fallback 逻辑
 std::string RealLLMClient::CallModel(const std::string& prompt) const {
     // 基本配置校验。
-    // 如果 api_url、api_key 或 model_name 没配置好，直接返回空，
-    // 避免继续发起无效请求。
     if (api_url_.empty() || api_key_.empty() || model_name_.empty()) {
         return "";
     }
 
-    // 初始化 libcurl 句柄。
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
         return "";
     }
 
-    // 用来保存 HTTP 响应体。
     std::string response_body;
 
-    // 构造请求 JSON。
-    // 按 OpenAI-compatible chat completions 格式组织：
-    // {
-    //   "model": "...",
-    //   "temperature": 0.3,
-    //   "max_tokens": 32000,
-    //   "stream": false,
-    //   "messages": [...]
-    // }
     nlohmann::json request_json;
     request_json["model"] = model_name_;
     request_json["temperature"] = temperature_;
     request_json["max_tokens"] = max_tokens_;
     request_json["stream"] = false;
 
-    // messages 里包含 system 和 user 两条消息：
-    // 1. system：约束模型角色和输出格式
-    // 2. user：真正的评估 prompt
     request_json["messages"] = nlohmann::json::array(
         {
             {
@@ -370,54 +206,41 @@ std::string RealLLMClient::CallModel(const std::string& prompt) const {
             }
         });
 
-    // 把 JSON 序列化成字符串，作为 HTTP POST body。
     std::string request_body = request_json.dump();
 
-    // 组装 HTTP 请求头。
-    // 小马算力这里使用 Bearer Token 方式认证。
     struct curl_slist* headers = nullptr;
     std::string auth_header = "Authorization: Bearer " + api_key_;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, auth_header.c_str());
 
-    // 配置 curl 选项。
     curl_easy_setopt(curl, CURLOPT_URL, api_url_.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
 
-    // 设置请求体内容。
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
                      static_cast<long>(request_body.size()));
 
-    // 设置响应写回调，把服务端返回的数据写入 response_body。
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
 
-    // 设置超时时间，避免网络问题导致程序一直卡住。
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,
                      static_cast<long>(timeout_seconds_));
 
-    // 发起 HTTP 请求。
     CURLcode code = curl_easy_perform(curl);
 
-    // 获取 HTTP 状态码，例如 200 / 401 / 500。
     long http_status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
 
-    // 无论请求是否成功，都要释放资源，避免泄漏。
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    // 如果 libcurl 层面失败，例如网络错误、连接超时等，直接返回空。
     if (code != CURLE_OK) {
         LOG_WARN("llm http request failed at curl layer: code={}, msg={}",
                  static_cast<int>(code), curl_easy_strerror(code));
         return "";
     }
 
-    // 如果 HTTP 状态码不是 2xx，说明服务端没有正常返回结果。
-    // 把服务端原始错误体一起打出来，避免被 fallback 静默吞掉。
     if (http_status < 200 || http_status >= 300) {
         LOG_WARN("llm http non-2xx: status={}, body={}",
                  http_status, response_body);
@@ -425,11 +248,8 @@ std::string RealLLMClient::CallModel(const std::string& prompt) const {
     }
 
     try {
-        // 解析整个 HTTP 响应 JSON。
         nlohmann::json response_json = nlohmann::json::parse(response_body);
 
-        // 按 OpenAI-compatible 格式取结果：
-        // choices[0].message.content
         if (!response_json.contains("choices") ||
             !response_json["choices"].is_array() ||
             response_json["choices"].empty()) {
@@ -443,13 +263,8 @@ std::string RealLLMClient::CallModel(const std::string& prompt) const {
             return "";
         }
 
-        // 返回模型生成的文本内容。
-        // 注意：这里返回的仍然应该是一段 JSON 字符串，
-        // 后续会交给 ParseEvaluateResult() 再解析成 EvaluateResult。
         return choice["message"]["content"].get<std::string>();
     } catch (...) {
-        // 如果响应 JSON 解析失败，也返回空字符串，
-        // 让上层统一走 fallback 降级逻辑。
         return "";
     }
 }
@@ -491,6 +306,7 @@ std::string RealLLMClient::BuildFallbackSummary(
         oss << "回答仍有提升空间，建议加强基础概念和项目表达。";
     }
 
-    return oss.str();        
+    return oss.str();
 }
 
+}  // namespace interview::services

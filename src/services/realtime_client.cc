@@ -1,12 +1,16 @@
-
 #include "services/realtime_client.h"
 
 #include <iostream>
 
+namespace interview::services {
+
+using interview::common::Protocol;
+using interview::common::ProtocolMessage;
+
 // 构造函数
 // 参数：
 // server_url ： 实施服务地址
-RealTimeClient::RealTimeClient(std::string server_url) 
+RealTimeClient::RealTimeClient(std::string server_url)
 : server_url_(std::move(server_url))
 {}
 
@@ -18,7 +22,7 @@ RealTimeClient::~RealTimeClient() {
 }
 
 // 建立连接
-bool RealTimeClient::RealTimeClient::Connect() {
+bool RealTimeClient::Connect() {
     if (connected_) {
         return true;
     }
@@ -67,7 +71,8 @@ bool RealTimeClient::SenMessage(const ProtocolMessage& message) {
     return !encoded.empty();
 }
 
-bool RealTimeClient::RecvMessage(const std::vector<uint8_t>& raw_data, ProtocolMessage& message) {
+bool RealTimeClient::RecvMessage(const std::vector<uint8_t>& raw_data,
+                                 ProtocolMessage& message) {
     if (!connected_) {
         return false;
     }
@@ -91,3 +96,5 @@ void RealTimeClient::SetMessageHandler(MessageHandler handler) {
 bool RealTimeClient::IsConnected() const {
     return connected_;
 }
+
+}  // namespace interview::services

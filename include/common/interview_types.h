@@ -4,7 +4,9 @@
 #include <string>
 #include <vector>
 
-// 
+namespace interview::common {
+
+//
 struct Question {
     int id =  0; //  题目编号
     std::string text; // 题目内容
@@ -24,14 +26,14 @@ struct AnswerRecord {
     // 这条记录是不是“追问题的回答记录”，
     // false 表示主问题回答
     // true 表示追问题回答
-    bool is_followup_answer = false;  
+    bool is_followup_answer = false;
 };
 
 // LLM 对一次回答的评估结果
 // InterviewSession在提交回答后，会拿到这个结果
 struct EvaluateResult {
     int score = 0; // 评分结果
-    
+
     bool need_followup = false; // 是否需要追问
     std::string followup_question; // 如果要追问，追问题目
 
@@ -44,5 +46,7 @@ struct InterviewReport {
     std::string summary; // 最终总结内容
     int total_score = 0; // 总分
 };
+
+}  // namespace interview::common
 
 #endif // COMMON_INTERVIEW_TYPES

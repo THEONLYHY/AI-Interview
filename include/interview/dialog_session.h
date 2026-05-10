@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 
+namespace interview::session {
+
 // DialogSession 是当前会话流程协调层。
 // 负责：
 // 1. 驱动 InterviewSession
@@ -17,8 +19,9 @@
 
 class DialogSession {
 public:
-    explicit DialogSession(std::unique_ptr<InterviewSession> interview_session,
-                           std::unique_ptr<RealTimeClient> realtime_client);
+    explicit DialogSession(
+        std::unique_ptr<InterviewSession> interview_session,
+        std::unique_ptr<interview::services::RealTimeClient> realtime_client);
 
     DialogSession(const DialogSession&) = delete;
     DialogSession& operator=(const DialogSession&) = delete;
@@ -31,12 +34,12 @@ public:
     void Run();
     void Stop();
 
-    DialogState state() const;
+    interview::common::DialogState state() const;
 private:
-    void SetState(DialogState new_state);
+    void SetState(interview::common::DialogState new_state);
 
     // 面试开始后的事件处理
-    void OnInterviewStarted(); 
+    void OnInterviewStarted();
     // 负责出题
     void OnAskQuestion();
     // 处理主问题回答
@@ -47,18 +50,19 @@ private:
     void OnEnterSummary();
 
       // 处理实时层回调上来的协议消息。
-    void OnRealTimeMessage(const ProtocolMessage& message);
+    void OnRealTimeMessage(const interview::common::ProtocolMessage& message);
 
     // test
     void SendHelloMessage();
     void SimulateIncomingMessage();
 private:
     std::unique_ptr<InterviewSession> interview_session_;
-    std::unique_ptr<RealTimeClient> realtime_client_;
+    std::unique_ptr<interview::services::RealTimeClient> realtime_client_;
 
-    DialogState state_ = DialogState::kInit;
+    interview::common::DialogState state_ = interview::common::DialogState::kInit;
     bool is_running_ = false;
 };
 
+}  // namespace interview::session
 
 #endif // INTERVIEW_DIALOGSESSION_H

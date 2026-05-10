@@ -8,6 +8,8 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+namespace interview::common {
+
 std::shared_ptr<spdlog::logger> Logger::logger_ = nullptr;
 
 bool Logger::Init() {
@@ -46,3 +48,5 @@ bool Logger::Init() {
 std::shared_ptr<spdlog::logger> Logger::Get() {
     return logger_;
 }
+
+}  // namespace interview::common

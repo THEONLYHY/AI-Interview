@@ -5,6 +5,9 @@
 #include <vector>
 
 #include "llm_client.h"
+
+namespace interview::services {
+
 // RealLLMClient 是第三阶段新增的真实大模型实现。
 // 它的职责是：
 // 1. 组织 prompt
@@ -28,35 +31,35 @@ public:
     // 第三阶段可以先做一个最小版本：
     // 1. 先回退到固定题目
     // 2. 或者后面再接真实题目生成
-    std::vector<Question> GenerateQuestions(
+    std::vector<interview::common::Question> GenerateQuestions(
         const std::string& resume_text,
         const std::string& job_description,
         int question_count) override;
-    
+
     // 评估回答。
     // 这是第三阶段最推荐优先接入真实能力的接口。
-    EvaluateResult EvaluateAnswer(
-        const Question& question,
+    interview::common::EvaluateResult EvaluateAnswer(
+        const interview::common::Question& question,
         const std::string& answer,
-        const std::vector<AnswerRecord>& history) override;
+        const std::vector<interview::common::AnswerRecord>& history) override;
 
         // 生成整场面试总结。
     // 第三阶段初期可以先做一个保底实现，
     // 等真实评分稳定后再切到真实总结生成。
     std::string GenerateSummary(
-        const std::vector<AnswerRecord>& records) override;
+        const std::vector<interview::common::AnswerRecord>& records) override;
 private:
     // 构造“回答评估”用的 prompt。
     // 作用：
     //   把当前题目、当前回答、历史记录组织成模型输入。
     std::string BuildEvaluatePrompt(
-        const Question& question,
+        const interview::common::Question& question,
         const std::string& answer,
-        const std::vector<AnswerRecord>& history) const;
-    
+        const std::vector<interview::common::AnswerRecord>& history) const;
+
     // 构造整场面试总结 prompt。
     std::string BuildSummaryPrompt(
-        const std::vector<AnswerRecord>& records) const;
+        const std::vector<interview::common::AnswerRecord>& records) const;
 
     // 构造题目生成用的 prompt。
     // 参数：
@@ -78,10 +81,12 @@ private:
     // 返回值：
     //   解析后的题目列表。
     //   如果解析失败，调用方应走 fallback 固定题目。
-    std::vector<Question> ParseQuestions(const std::string& response_text) const;
+    std::vector<interview::common::Question> ParseQuestions(
+        const std::string& response_text) const;
     // 解析模型返回的结构化结果。
     // 第三阶段建议模型输出 JSON，再由这里解析成 EvaluateResult。
-    EvaluateResult ParseEvaluateResult(const std::string& response_text) const;
+    interview::common::EvaluateResult ParseEvaluateResult(
+        const std::string& response_text) const;
 
     // 真实模型调用接口。
     // 第三阶段先把它抽出来，后面可以在 .cc 里接：
@@ -91,15 +96,15 @@ private:
     std::string CallModel(const std::string& prompt) const;
 
     // 当真实模型调用失败时，提供兜底评估结果。
-    EvaluateResult BuildFallbackEvaluateResult() const;
+    interview::common::EvaluateResult BuildFallbackEvaluateResult() const;
 
     // 当真实总结失败时，提供兜底总结。
     std::string BuildFallbackSummary(
-        const std::vector<AnswerRecord>& records) const;
+        const std::vector<interview::common::AnswerRecord>& records) const;
 
 private:
     // 直接保存完整请求地址，比如：
-    // 
+    //
     std::string api_url_;
     // Bearer Token
     std::string api_key_;
@@ -112,5 +117,7 @@ private:
 
     int timeout_seconds_ = 60;
 };
+
+}  // namespace interview::services
 
 #endif // SERVICES_REAL_LLM_CLIENT_H_

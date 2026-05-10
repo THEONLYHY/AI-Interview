@@ -7,6 +7,8 @@
 
 #include "common/protocol.h"
 
+namespace interview::services {
+
 // RealtimeClient 表示实时通信客户端。
 // 第四阶段当前先做最小骨架，它的职责先只包括：
 // 1. 建立连接
@@ -22,7 +24,7 @@
 class RealTimeClient {
 public:
     // 注册一个回调函数，在收到并成功解析消息后触发
-    using MessageHandler = std::function<void(const ProtocolMessage&)>;
+    using MessageHandler = std::function<void(const interview::common::ProtocolMessage&)>;
     // 构造函数
     // 参数：
     // server_url ： 实施服务地址
@@ -40,8 +42,9 @@ public:
     // 参数:
     //   message : 结构化消息
     // 返回值：
-    bool SenMessage(const ProtocolMessage& message);
-    bool RecvMessage(const std::vector<uint8_t>& raw_data, ProtocolMessage& message);
+    bool SenMessage(const interview::common::ProtocolMessage& message);
+    bool RecvMessage(const std::vector<uint8_t>& raw_data,
+                     interview::common::ProtocolMessage& message);
     // 设置消息处理回调
     void SetMessageHandler(MessageHandler handler);
     // 获取当前是否已连接
@@ -54,5 +57,7 @@ private:
     bool connected_ = false;
     MessageHandler messgae_handler_;
 };
+
+}  // namespace interview::services
 
 #endif

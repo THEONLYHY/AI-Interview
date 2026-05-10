@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <vector>
 
+namespace interview::common {
+
 //[协议头 4字节] [可选字段] [payload大小 4字节] [payload数据]
 // 协议头布局
 // Byte 0: [version(4bit)] | header_size(4bit)
@@ -83,9 +85,9 @@ public:
     // 从第一个字节中提取 header_size
     static uint8_t ExtractHeaderSize(uint8_t byte0);
     // 按大端序 将32为无符号整数追加到buffer 末尾
-    // 
+    //
     static void AppendUint32(std::vector<uint8_t>& buffer, uint32_t value);
-    
+
     static uint32_t ReadUint32(const std::vector<uint8_t>& buffer,
                                 std::size_t offset);
     // 将结构化消息编码成字节流
@@ -95,8 +97,6 @@ public:
     static ProtocolMessage Decode(const std::vector<uint8_t>& data);
 };
 
-
-
-
+}  // namespace interview::common
 
 #endif

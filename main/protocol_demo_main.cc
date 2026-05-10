@@ -4,6 +4,8 @@
 
 #include "common/protocol.h"
 
+using namespace interview;
+
 // 把字符串转成字节数组。
 std::vector<uint8_t> StringToBytes(const std::string& text) {
   return std::vector<uint8_t>(text.begin(), text.end());
@@ -24,15 +26,15 @@ void PrintSeparator(const std::string& title) {
 void TestNormalEncodeDecode() {
   PrintSeparator("normal encode/decode");
 
-  ProtocolMessage message;
-  message.header.version = kProtocolVersion;
+  common::ProtocolMessage message;
+  message.header.version = common::kProtocolVersion;
   message.header.header_size = 1;
-  message.header.message_type = MessageType::kClientEvent;
+  message.header.message_type = common::MessageType::kClientEvent;
   message.header.flags = 0;
-  message.header.serialization = SerializationType::kJson;
+  message.header.serialization = common::SerializationType::kJson;
   message.payload = StringToBytes("hello");
 
-  std::vector<uint8_t> encoded = Protocol::Encode(message);
+  std::vector<uint8_t> encoded = common::Protocol::Encode(message);
 
   std::cout << "encoded bytes size = " << encoded.size() << "\n";
   std::cout << "encoded bytes: ";
@@ -41,7 +43,7 @@ void TestNormalEncodeDecode() {
   }
   std::cout << "\n";
 
-  ProtocolMessage decoded = Protocol::Decode(encoded);
+  common::ProtocolMessage decoded = common::Protocol::Decode(encoded);
 
   std::cout << "decoded header.version = "
             << static_cast<int>(decoded.header.version) << "\n";
@@ -65,7 +67,7 @@ void TestTooShortData() {
   std::vector<uint8_t> bad_data = {17, 1, 0};
 
   try {
-    ProtocolMessage decoded = Protocol::Decode(bad_data);
+    common::ProtocolMessage decoded = common::Protocol::Decode(bad_data);
     (void)decoded;
     std::cout << "unexpected success\n";
   } catch (const std::exception& e) {
@@ -81,13 +83,13 @@ void TestPayloadSizeMismatch() {
   std::vector<uint8_t> bad_data;
 
   // 固定头。
-  bad_data.push_back(Protocol::BuildByte0(kProtocolVersion, 1));
-  bad_data.push_back(static_cast<uint8_t>(MessageType::kClientEvent));
+  bad_data.push_back(common::Protocol::BuildByte0(common::kProtocolVersion, 1));
+  bad_data.push_back(static_cast<uint8_t>(common::MessageType::kClientEvent));
   bad_data.push_back(0);
-  bad_data.push_back(static_cast<uint8_t>(SerializationType::kJson));
+  bad_data.push_back(static_cast<uint8_t>(common::SerializationType::kJson));
 
   // payload size = 10
-  Protocol::AppendUint32(bad_data, 10);
+  common::Protocol::AppendUint32(bad_data, 10);
 
   // 实际 payload 只给 3 个字节。
   bad_data.push_back('a');
@@ -95,7 +97,7 @@ void TestPayloadSizeMismatch() {
   bad_data.push_back('c');
 
   try {
-    ProtocolMessage decoded = Protocol::Decode(bad_data);
+    common::ProtocolMessage decoded = common::Protocol::Decode(bad_data);
     (void)decoded;
     std::cout << "unexpected success\n";
   } catch (const std::exception& e) {
@@ -111,20 +113,20 @@ void TestUnsupportedHeaderSize() {
   std::vector<uint8_t> bad_data;
 
   // 故意构造 header_size = 2。
-  bad_data.push_back(Protocol::BuildByte0(kProtocolVersion, 2));
-  bad_data.push_back(static_cast<uint8_t>(MessageType::kClientEvent));
+  bad_data.push_back(common::Protocol::BuildByte0(common::kProtocolVersion, 2));
+  bad_data.push_back(static_cast<uint8_t>(common::MessageType::kClientEvent));
   bad_data.push_back(0);
-  bad_data.push_back(static_cast<uint8_t>(SerializationType::kJson));
+  bad_data.push_back(static_cast<uint8_t>(common::SerializationType::kJson));
 
   // payload size = 5
-  Protocol::AppendUint32(bad_data, 5);
+  common::Protocol::AppendUint32(bad_data, 5);
 
   // payload = "hello"
   std::vector<uint8_t> payload = StringToBytes("hello");
   bad_data.insert(bad_data.end(), payload.begin(), payload.end());
 
   try {
-    ProtocolMessage decoded = Protocol::Decode(bad_data);
+    common::ProtocolMessage decoded = common::Protocol::Decode(bad_data);
     (void)decoded;
     std::cout << "unexpected success\n";
   } catch (const std::exception& e) {

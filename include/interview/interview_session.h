@@ -7,6 +7,8 @@
 #include "common/interview_types.h"
 #include "services/llm_client.h"
 
+namespace interview::session {
+
 // 1. 启动面试并初始化题目
 // 2. 提供当前主问题
 // 3. 接收用户回答并调用LLM 评分
@@ -15,32 +17,34 @@
 // 6. 在结束后生成最终报告
 class InterviewSession {
 public:
-    explicit InterviewSession(std::unique_ptr<LLMClient> llm_client);
+    explicit InterviewSession(
+        std::unique_ptr<interview::services::LLMClient> llm_client);
 
     void Start();
 
     bool HasNextQuestion() const;
 
-    Question GetCurrentQuestion() const;
+    interview::common::Question GetCurrentQuestion() const;
 
-    EvaluateResult SubmitAnswer(const std::string& answer);
+    interview::common::EvaluateResult SubmitAnswer(const std::string& answer);
 
     bool HasPendingFollowup() const;
 
-    Question GetPendingFollowupQuestion() const;
+    interview::common::Question GetPendingFollowupQuestion() const;
 
-    EvaluateResult SubmitFollowupAnswer(const std::string& answer);
+    interview::common::EvaluateResult SubmitFollowupAnswer(
+        const std::string& answer);
 
     void MoveToNextQuestion();
 
-    InterviewReport GenerateReport() const;
+    interview::common::InterviewReport GenerateReport() const;
 private:
-    // 
-    std::unique_ptr<LLMClient> llm_client_;
+    //
+    std::unique_ptr<interview::services::LLMClient> llm_client_;
     // 主问题列表
-    std::vector<Question> questions_;
+    std::vector<interview::common::Question> questions_;
     // 整场面试的所有回答记录
-    std::vector<AnswerRecord> records_;
+    std::vector<interview::common::AnswerRecord> records_;
 
     int current_index_ = 0; // 当前进行到第几题
 
@@ -48,8 +52,9 @@ private:
     // 当主问题回答后，是否还有待处理的追问
     bool has_pending_followup_ = false;
     // 当前缓存的待处理的追问题目
-    Question pending_followup_question_;
+    interview::common::Question pending_followup_question_;
 };
 
+}  // namespace interview::session
 
 #endif // INTERVIEW_INTERVIEW_SESSION_H_

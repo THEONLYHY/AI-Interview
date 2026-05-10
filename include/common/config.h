@@ -3,6 +3,8 @@
 
 #include <string>
 
+namespace interview::common {
+
 // WebSocket 相关配置。
 // 第四阶段以后接实时语音链路时会用到。
 struct WsConfig {
@@ -53,7 +55,7 @@ struct LLMConfig {
 struct AppConfig {
     WsConfig ws;
     LLMConfig llm;
-};;
+};
 
 
 // 从 JSON 文件加载配置。
@@ -66,5 +68,7 @@ struct AppConfig {
 // 如果读取失败或字段缺失，当前版本会抛出异常。
 // 后面如果你想做得更工程化，可以再改成返回 bool + 错误信息。
 AppConfig LoadConfig(const std::string& file_path);
+
+}  // namespace interview::common
 
 #endif

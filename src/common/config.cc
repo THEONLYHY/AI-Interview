@@ -5,8 +5,10 @@
 
 #include <nlohmann/json.hpp>
 
+namespace interview::common {
+
 AppConfig LoadConfig(const std::string& file_path) {
-    
+
     std::ifstream ifs(file_path);
     if (!ifs.is_open()) {
         throw std::runtime_error("failed to open config file: " + file_path);
@@ -46,3 +48,5 @@ AppConfig LoadConfig(const std::string& file_path) {
     }
     return config;
 }
+
+}  // namespace interview::common

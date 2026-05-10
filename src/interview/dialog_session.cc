@@ -4,8 +4,22 @@
 
 #include <iostream>
 
+namespace interview::session {
+
+using interview::common::DialogState;
+using interview::common::DialogStateToString;
+using interview::common::EvaluateResult;
+using interview::common::InterviewReport;
+using interview::common::MessageType;
+using interview::common::Protocol;
+using interview::common::ProtocolMessage;
+using interview::common::Question;
+using interview::common::SerializationType;
+using interview::common::kProtocolVersion;
+using interview::services::RealTimeClient;
+
 DialogSession::DialogSession(std::unique_ptr<InterviewSession> interview_session,
-                             std::unique_ptr<RealTimeClient> realtime_client) 
+                             std::unique_ptr<RealTimeClient> realtime_client)
 : interview_session_(std::move(interview_session))
 , realtime_client_(std::move(realtime_client)) {
 
@@ -150,7 +164,7 @@ void DialogSession::OnRealTimeMessage(const ProtocolMessage& message) {
     std::string payload_text(message.payload.begin(), message.payload.end());
 
     switch (message.header.message_type) {
-        case MessageType::kServerEvent: 
+        case MessageType::kServerEvent:
             LOG_INFO("recevied server event: payload_size={}, payload={}",
                     message.payload.size(),
                     payload_text);
@@ -234,3 +248,5 @@ void DialogSession::SimulateIncomingMessage() {
         LOG_WARN("failed to simulate incoming message");
     }
 }
+
+}  // namespace interview::session

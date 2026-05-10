@@ -2,6 +2,12 @@
 
 #include <sstream>
 
+namespace interview::services {
+
+using interview::common::AnswerRecord;
+using interview::common::EvaluateResult;
+using interview::common::Question;
+
 // 生成固定主问题列表。
 // 第三阶段接口已经支持 resume_text、job_description 和 question_count，
 // 但 mock 实现里先不使用前两个参数，只根据 question_count 截取固定题目。
@@ -33,6 +39,7 @@ EvaluateResult MockLLMClient::EvaluateAnswer(
     const Question& question,
     const std::string& answer,
     const std::vector<AnswerRecord>& history) {
+    (void)history;
     EvaluateResult result;
 
     if (answer.size() < 10) {
@@ -48,7 +55,7 @@ EvaluateResult MockLLMClient::EvaluateAnswer(
         result.need_followup = false;
         result.feedback = "回答较完整，表达较清楚。";
     }
-    
+
     // 第一阶段先给固定风格的追问。
     // 这里根据题目内容返回不同追问，能让控制台流程更像真实面试。
     if (result.need_followup) {
@@ -92,3 +99,5 @@ std::string MockLLMClient::GenerateSummary(const std::vector<AnswerRecord>& reco
 
     return oss.str();
 }
+
+}  // namespace interview::services

@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+namespace interview::common {
+
 // 将version 和 header_size 打包到第1个字节中
 // 高4 bit 存version， 低 4 bit 存 header_size
 uint8_t Protocol::BuildByte0(uint8_t version, uint8_t header_size) {
@@ -25,7 +27,7 @@ uint8_t Protocol::ExtractHeaderSize(uint8_t byte0) {
 // 按大端序 将32位无符号整数追加到buffer 末尾
 // 例如 value = 0x12345678, 会写入4个字节:
 // 0x12 0x34 0x56 0x78
-void Protocol::AppendUint32(std::vector<uint8_t>& buffer, 
+void Protocol::AppendUint32(std::vector<uint8_t>& buffer,
                                 uint32_t value) {
     buffer.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
     buffer.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
@@ -106,3 +108,5 @@ ProtocolMessage Protocol::Decode(const std::vector<uint8_t>& data) {
                             data.begin() + payload_offset + payload_size);
     return message;
 }
+
+}  // namespace interview::common

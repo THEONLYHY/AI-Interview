@@ -1,5 +1,12 @@
 #include "interview/interview_session.h"
 
+namespace interview::session {
+
+using interview::common::AnswerRecord;
+using interview::common::EvaluateResult;
+using interview::common::InterviewReport;
+using interview::common::Question;
+using interview::services::LLMClient;
 
 InterviewSession::InterviewSession(std::unique_ptr<LLMClient> llm_client)
 : llm_client_(std::move(llm_client)){
@@ -111,3 +118,5 @@ InterviewReport InterviewSession::GenerateReport() const {
 
     return report;
 }
+
+}  // namespace interview::session

@@ -6,6 +6,7 @@
 
 #include "common/interview_types.h"
 
+namespace interview::services {
 
 class LLMClient {
 public:
@@ -22,7 +23,7 @@ public:
     // 第三阶段开始，这个接口预留成“真实题目生成”的形式。
     // 如果当前还没接真实题目生成，MockLLMClient 或 RealLLMClient
     // 也可以先忽略部分参数，返回固定题目。
-    virtual std::vector<Question> GenerateQuestions(
+    virtual std::vector<interview::common::Question> GenerateQuestions(
         const std::string& resume_text,
         const std::string& job_description,
         int question_count
@@ -37,12 +38,15 @@ public:
     //   EvaluateResult，包含分数、是否追问、追问内容和反馈。
     //
     // 第三阶段建议优先先把这个接口接到真实 LLM。
-    virtual EvaluateResult EvaluateAnswer(const Question& question, 
-                                          const std::string& answer,
-                                          const std::vector<AnswerRecord>& history) = 0;
+    virtual interview::common::EvaluateResult EvaluateAnswer(
+        const interview::common::Question& question,
+        const std::string& answer,
+        const std::vector<interview::common::AnswerRecord>& history) = 0;
 
-    virtual std::string GenerateSummary(const std::vector<AnswerRecord>& records) = 0;
+    virtual std::string GenerateSummary(
+        const std::vector<interview::common::AnswerRecord>& records) = 0;
 };
 
+}  // namespace interview::services
 
 #endif // SERVICES_LLM_CLIENT_H_
