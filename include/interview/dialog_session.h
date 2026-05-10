@@ -3,14 +3,22 @@
 
 #include "interview_session.h"
 #include "common/dialog_state.h"
+#include "services/realtime_client.h"
 
 #include <memory>
 #include <string>
 
+// DialogSession 是当前会话流程协调层。
+// 负责：
+// 1. 驱动 InterviewSession
+// 2. 管理状态机
+// 3. 持有 RealtimeClient
+// 4. 接收实时层回调上来的消息
 
 class DialogSession {
 public:
-    explicit DialogSession(std::unique_ptr<InterviewSession> interview_session);
+    explicit DialogSession(std::unique_ptr<InterviewSession> interview_session,
+                           std::unique_ptr<RealTimeClient> realtime_client);
 
     DialogSession(const DialogSession&) = delete;
     DialogSession& operator=(const DialogSession&) = delete;
@@ -38,8 +46,16 @@ private:
     // 进入总结阶段
     void OnEnterSummary();
 
+      // 处理实时层回调上来的协议消息。
+    void OnRealTimeMessage(const ProtocolMessage& message);
+
+    // test
+    void SendHelloMessage();
+    void SimulateIncomingMessage();
 private:
     std::unique_ptr<InterviewSession> interview_session_;
+    std::unique_ptr<RealTimeClient> realtime_client_;
+
     DialogState state_ = DialogState::kInit;
     bool is_running_ = false;
 };

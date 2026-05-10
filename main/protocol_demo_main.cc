@@ -133,10 +133,10 @@ void TestUnsupportedHeaderSize() {
 }
 
 int main() {
-  TestNormalEncodeDecode();
-  TestTooShortData();
-  TestPayloadSizeMismatch();
-  TestUnsupportedHeaderSize();
+    TestNormalEncodeDecode();
+    TestTooShortData();
+    TestPayloadSizeMismatch();
+    TestUnsupportedHeaderSize();
 
-  return 0;
+    return 0;
 }
