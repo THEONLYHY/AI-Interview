@@ -39,13 +39,13 @@ set(INTERVIEW_SOURCES
 set(SERVICES_SOURCES
     src/services/mock_llm_client.cc
     src/services/real_llm_client.cc
-    src/services/realtime_client.cc
+    src/services/mock_realtime_client.cc
+    src/services/real_realtime_client.cc
 )
 
 set(MAIN_SOURCES
-    # main/dialog_session_realtime_demo_main.cc
-    # main/interview_demo_main.cc
     main/test.cc
+    # main/dialog_session_realtime_demo_main.cc
 )
 
 # add_executable(protocol_demo
@@ -120,10 +120,33 @@ target_link_libraries(ai_interview
         ZLIB::ZLIB
 )
 
+# 阶段 5：Mock 实时层脚本 + DialogSession 事件驱动（不依赖真 WSS）
+add_executable(dialog_session_realtime_demo
+    main/dialog_session_realtime_demo_main.cc
+    ${COMMON_SOURCES}
+    ${INTERVIEW_SOURCES}
+    ${SERVICES_SOURCES}
+)
+
+target_include_directories(dialog_session_realtime_demo
+    PRIVATE
+        ${PROJECT_INCLUDE_DIR}
+)
+
+target_link_libraries(dialog_session_realtime_demo
+    PRIVATE
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+        Boost::system
+        CURL::libcurl
+        ZLIB::ZLIB
+)
 
 #警告选项
 if(MSVC)
     target_compile_options(ai_interview PRIVATE /W4)
+    target_compile_options(dialog_session_realtime_demo PRIVATE /W4)
 else()
     target_compile_options(ai_interview PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(dialog_session_realtime_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()

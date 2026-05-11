@@ -1,15 +1,18 @@
 #ifndef INCLUDE_SERVICES_REALTIME_CLIENT_H_
 #define INCLUDE_SERVICES_REALTIME_CLIENT_H_
 
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
+
+#include "nlohmann/json.hpp"
 
 #include "common/protocol.h"
 
 namespace interview::services {
 
-// RealtimeClient 表示实时通信客户端。
+
 // 第四阶段当前先做最小骨架，它的职责先只包括：
 // 1. 建立连接
 // 2. 关闭连接
@@ -21,41 +24,38 @@ namespace interview::services {
 // - WebSocket 连接管理
 // - 音频流收发
 
-class RealTimeClient {
+// RealtimeClient：实时通信客户端抽象基类
+// - 具体实现两份：MockRealtimeClient（脚本化测试）、RealRealtimeClient（豆包 WSS）
+// - 事件驱动：上层通过 SetEventHandler 注册回调，收到服务端帧后投递 ParsedResponse
+class RealtimeClient {
 public:
-    // 注册一个回调函数，在收到并成功解析消息后触发
-    using MessageHandler = std::function<void(const interview::common::ProtocolMessage&)>;
-    // 构造函数
-    // 参数：
-    // server_url ： 实施服务地址
-    explicit RealTimeClient(std::string server_url);
+    using EventHandler = 
+        std::function<void(const interview::common::ParsedResponse&)>;
 
-    // 析构函数
-    ~RealTimeClient();
+        virtual ~RealtimeClient() = default;
 
-    // 建立连接
-    bool Connect();
+        // 建立连接(含WSS 握手 + StartConnection + StartSession)
+        // 失败返回false, 不抛异常; 具体错误由实现内部写日志
+        virtual bool Connect() = 0;
 
-    // 关闭连接
-    void Close();
-    // 发送一条协议消息
-    // 参数:
-    //   message : 结构化消息
-    // 返回值：
-    bool SenMessage(const interview::common::ProtocolMessage& message);
-    bool RecvMessage(const std::vector<uint8_t>& raw_data,
-                     interview::common::ProtocolMessage& message);
-    // 设置消息处理回调
-    void SetMessageHandler(MessageHandler handler);
-    // 获取当前是否已连接
-    bool IsConnected() const;
+        // 关闭连接(可重入)，不抛异常
+        virtual void Close() = 0;
 
-private:
-    // 服务端地址
-    std::string server_url_;
-    // 当前连接状态
-    bool connected_ = false;
-    MessageHandler messgae_handler_;
+        // 发送Client Full Request 帧(Json payload)
+        //- session_id 为空字符串时不写会话段(适用于kStartConnection 等连接级事件)
+        virtual bool SendEvent(uint32_t event,
+                                const std::string& session_id,
+                                const nlohmann::json& payload) = 0;
+        // 发送Client Audio Only帧 （PCM 原始字节)
+        // event 通常是 events::kTaskRequest(=200)
+        virtual bool SendAudio(const std::string& session_id,
+                                const std::vector<uint8_t>& pcm) = 0;
+        
+        // 注册事件回调
+        // 注意：回调在 Connect() 内部启动的工作线程触发，上层需自行处理跨线程访问
+        virtual void SetEventHandler(EventHandler handler) = 0;
+
+        virtual bool IsConnected() const = 0;
 };
 
 }  // namespace interview::services
