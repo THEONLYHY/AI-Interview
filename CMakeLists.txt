@@ -18,6 +18,8 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(CURL REQUIRED)
+# Protocol::CompressGzip / DecompressGzip 需要 zlib
+find_package(ZLIB REQUIRED)
 
 set(PROJECT_INCLUDE_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -41,7 +43,9 @@ set(SERVICES_SOURCES
 )
 
 set(MAIN_SOURCES
-    main/dialog_session_realtime_demo_main.cc
+    # main/dialog_session_realtime_demo_main.cc
+    # main/interview_demo_main.cc
+    main/test.cc
 )
 
 # add_executable(protocol_demo
@@ -113,6 +117,7 @@ target_link_libraries(ai_interview
         spdlog::spdlog
         Boost::system
         CURL::libcurl
+        ZLIB::ZLIB
 )
 
 
