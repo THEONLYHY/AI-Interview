@@ -46,8 +46,11 @@ public:
 private:
     void SetState(interview::common::DialogState new_state);
 
+    // 面试开始后的事件处理
     void OnInterviewStarted();
+    // 负责出题
     void OnAskQuestion();
+    // 处理主问题回答
     void OnCandidateAnswer(const std::string& answer);
     void OnFollowupAnswer(const std::string& answer);
     void OnEnterSummary();

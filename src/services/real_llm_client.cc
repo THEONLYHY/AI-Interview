@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 
+#include <cstddef>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -40,21 +41,372 @@ std::vector<Question> BuildDefaultQuestions(int question_count) {
     return std::vector<Question>(questions.begin(),
                                  questions.begin() + question_count);
 }
+
+// 从 Chat Completions 响应 JSON 里取出 assistant 的纯文本 content。
+// 失败返回空字符串（上层走 fallback）。
+std::string ParseChatCompletionContent(const std::string& response_body) {
+    try {
+        const nlohmann::json response_json = nlohmann::json::parse(response_body);
+        if (!response_json.contains("choices") ||
+            !response_json["choices"].is_array() ||
+            response_json["choices"].empty()) {
+            return {};
+        }
+        const auto& choice = response_json["choices"][0];
+        if (!choice.contains("message") || !choice["message"].contains("content")) {
+            return {};
+        }
+        return choice["message"]["content"].get<std::string>();
+    } catch (...) {
+        return {};
+    }
+}
+
+// 模型偶尔会输出带 Markdown 代码块的 JSON；尝试截取首尾花括号再解析。
+std::string StripJsonCandidate(std::string s) {
+    const auto first = s.find('{');
+    const auto last = s.find('}');
+    if (first != std::string::npos && last != std::string::npos && last > first) {
+        return s.substr(first, last - first + 1);
+    }
+    return s;
+}
+
+// 评估接口要求模型只输出 JSON；这里做一次宽松提取。
+EvaluateResult ParseEveluateJsonLoose(const std::string& text) {
+    try {
+        const nlohmann::json j = 
+            nlohmann::json::parse(StripJsonCandidate(text));
+        EvaluateResult r;
+        r.score = j.value("score", 60);
+        r.need_followup = j.value("need_followup", false);
+        r.followup_question = j.value("followup_question", "");
+        r.feedback = j.value("feedback", "模型已完成评估，但反馈内容为空");
+        if (!r.need_followup) {
+            r.followup_question.clear();
+        }
+        return r;
+    } catch (...) {
+        return {};
+    }
+}
+
 }  // namespace
 
+// ======================== Impl：集中放 curl + 业务解析 ========================    
+class RealLLMClient::Impl {
+public:
+    Impl(std::string api_url, std::string api_key, std::string model_name,
+       double temperature, int max_tokens, int timeout_seconds)
+      : api_url_(std::move(api_url)),
+        api_key_(std::move(api_key)),
+        model_name_(std::move(model_name)),
+        temperature_(temperature),
+        max_tokens_(max_tokens),
+        timeout_seconds_(timeout_seconds) {}
+
+    // 统一 HTTP：POST JSON，返回响应体；失败返回空串（内部已打日志）。
+    std::string HttpPostJson(const std::string& url,
+                            const std::vector<std::pair<std::string, std::string>>& headers,
+                            const std::string& body) const {
+        if (url.empty()) {
+            LOG_WARN("HttpPostJson: empty url");
+            return {};
+        }
+
+        // “一次HTTP请求的上下文对象”
+        CURL* curl = curl_easy_init();
+        if (curl == nullptr) {
+            LOG_WARN("HttpPostJson: curl_easy_init failed");
+            return {};
+        }
+        // 把headers 参数转换成 libcurl 认识的链表格式
+        // libcurl 要求的是curl_slist*
+        curl_slist* header_list = nullptr;
+        for (const auto& h : headers) {
+            // 比如：
+            // ("Content-Type", "application/json")
+            // 会被拼成：
+            // "Content-Type: application/json"
+            const std::string line = h.first + ": " + h.second;
+            header_list = curl_slist_append(header_list, line.c_str());
+        }
+        // 准备一个字符串用来接收服务端返回的响应体
+        // 后面WriteCallback 会不断把收到的数据追加到这里
+        std::string response_body;
+        // 设置请求的目标url
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        // 设置HTTP请求头
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+        // 明确指定这是一个POST 请求
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        // 设置POST 请求体数据
+        // 这里body 通常就是一个 JSON 字符串
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+        // 显式告诉libcurl, 请求体长度是多少
+        // 这样即使 body 里将来包含 '\0'，libcurl 也能正确处理。
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
+                        static_cast<long>(body.size()));
+        // 设置写回调函数。
+        // 当服务器返回数据时，libcurl 会调用 WriteCallback。
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        // 把 response_body 的地址传给回调函数。
+        // 这样回调就知道把收到的数据写到哪里。
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+        // 设置超时时间，防止请求无限卡住。
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds_));
+
+        // 真正执行这次 HTTP 请求。
+        const CURLcode code = curl_easy_perform(curl);
+        // 获取 HTTP 状态码，比如 200、401、500。
+        long http_status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+        // 释放请求头链表。
+        curl_slist_free_all(header_list);
+        // 释放 curl handle。
+        curl_easy_cleanup(curl);
+
+        // 先检查网络层 / libcurl 层是否执行成功。
+        // 注意：这和 HTTP 200/500 不是一回事。
+        // code != CURLE_OK 说明请求可能压根没成功发出去，
+        // 或者连接、DNS、超时等环节出错。
+        if (code != CURLE_OK) {
+            LOG_WARN("HttpPostJson: curl error {}: {}", static_cast<int>(code),
+            curl_easy_strerror(code));
+            return {};
+        }
+        // 再检查 HTTP 状态码是不是 2xx。
+        // 如果不是 2xx，说明服务端返回了错误语义。
+        if (http_status < 200 || http_status >= 300) {
+            LOG_WARN("HttpPostJson: HTTP {} body: {}", http_status, response_body);
+            return {};
+        }
+        // 一切正常，返回服务端响应体。
+        return response_body;
+    }
+    
+    // 构建OpenAI 兼容 Chat Completions 请求，拿到 assistant 的content文本.
+    std::string CallModel(const std::string& user_prompt,
+                            const std::string& system_prompt) const {
+        if (api_url_.empty() || api_key_.empty() || model_name_.empty()) {
+            LOG_WARN("CallModel: missing api_url / api_key / model_name");
+            return {};
+        }
+
+        nlohmann::json request_json;
+        request_json["model"] = model_name_;
+        request_json["temperature"] = temperature_;
+        request_json["max_tokens"] = max_tokens_;
+        request_json["stream"] = false;
+        request_json["messages"] = nlohmann::json::array({
+            nlohmann::json{{"role", "system"}, {"content", system_prompt}},
+            nlohmann::json{{"role", "user"}, {"content", user_prompt}},
+        });
+        const std::string req_body = request_json.dump();
+        std::vector<std::pair<std::string, std::string>> hdrs;
+        hdrs.emplace_back("Content-Type", "application/json");
+        hdrs.emplace_back("Authorization", "Bearer " + api_key_);
+
+        const std::string resp = HttpPostJson(api_url_, hdrs, req_body);
+        if (resp.empty()) {
+            return {};
+        }
+        return ParseChatCompletionContent(resp);
+    }
+    
+    std::string BuildQuestionPrompt(const std::string& resume_text,
+                                    const std::string& job_description,
+                                    int question_count) const {
+        std::ostringstream oss;
+        oss << "你是技术面试官。请根据候选人简历与目标岗位，生成恰好 "
+        << question_count << " 道**主问题**（不要追问子题）。\n\n";
+        oss << "你必须只输出一个 JSON 数组，不要 Markdown，不要多余说明。\n";
+        oss << "每一项格式：{\"id\":整型,\"text\":\"题目字符串\"}，id 从 1 递增。\n\n";
+        oss << "岗位描述：\n" << job_description << "\n\n";
+        oss << "简历文本（可能为空）：\n" << resume_text << "\n";
+        return oss.str();
+    }
+
+    std::vector<Question> ParseQuestionArray(
+        const std::string& response_text) const {
+        try {
+            const nlohmann::json root = nlohmann::json::parse(StripJsonCandidate(response_text));
+            if (!root.is_array()) {
+                return {};
+            }
+            std::vector<Question> out;
+            out.reserve(root.size());
+            for (const auto& item : root) {
+                Question q;
+                q.id = item.value("id", static_cast<int>(out.size()) + 1);
+                q.text = item.value("text", std::string{});
+                q.is_followup = false;
+                q.parent_question_id = -1;
+                if (!q.text.empty()) {
+                    out.push_back(std::move(q));
+                }
+            }
+            return out;
+        } catch (...) {
+            return {};
+        }
+    }
+    
+    std::vector<Question> GenerateQuestion(const std::string& resume_text,
+                                            const std::string& job_description,
+                                            int question_count) {
+        if (question_count <= 0) {
+            return {};
+        }
+        const std::string prompt = 
+            BuildQuestionPrompt(resume_text, job_description, question_count);
+        const std::string system = 
+            "你必须严格按要求只输出 JSON 数组；不要输出任何其他文字。";
+        const std::string content = CallModel(prompt, system);
+        if (content.empty()) {
+            LOG_WARN("GenerateQuestions: empty model content, use default questions");
+            return BuildDefaultQuestions(question_count);
+        }
+        auto parsed = ParseQuestionArray(content);
+        if (static_cast<int>(parsed.size()) < question_count) {
+            LOG_WARN(
+                "GenerateQuestions: parse got {} questions, expect {}, fallback",
+                parsed.size(), question_count);
+            return BuildDefaultQuestions(question_count);
+        }
+
+        if (static_cast<int>(parsed.size()) > question_count) {
+            parsed.resize(static_cast<std::size_t>(question_count));
+        }
+        return parsed;
+    }
+
+    std::string BuildEvaluatePrompt(const Question& question,
+                                    const std::string& answer,
+                                    const std::vector<AnswerRecord>& history) const {
+        std::ostringstream oss;
+        oss << "你是一个严格的技术面试官。\n";
+        oss << "请根据题目、候选人回答和历史上下文，对当前回答进行评分和反馈。\n";
+        oss << "你必须只返回 JSON，不要 Markdown，不要额外解释。\n\n";
+        oss << "JSON 格式：\n";
+        oss << "{\n";
+        oss << "  \"score\": 0,\n";
+        oss << "  \"need_followup\": false,\n";
+        oss << "  \"followup_question\": \"\",\n";
+        oss << "  \"feedback\": \"\"\n";
+        oss << "}\n\n";
+        oss << "当前题目：\n" << question.text << "\n\n";
+        oss << "当前回答：\n" << answer << "\n\n";
+        oss << "历史上下文：\n";
+        if (history.empty()) {
+            oss << "无\n";
+        } else {
+            for (std::size_t i = 0; i < history.size(); ++i) {
+                oss << "记录 " << (i + 1) << ":\n";
+                oss << "题目: " << history[i].question_text << "\n";
+                oss << "回答: " << history[i].answer_text << "\n";
+                oss << "得分: " << history[i].score << "\n";
+                oss << "是否为追问回答: "
+                    << (history[i].is_followup_answer ? "true" : "false") << "\n\n";
+            }
+        }
+        return oss.str();
+    }
+    EvaluateResult BuildFallbackEvaluateResult() const {
+        EvaluateResult r;
+        r.score = 60;
+        r.need_followup = false;
+        r.followup_question.clear();
+        r.feedback = "降级评估：模型调用失败或解析失败。";
+        return r;
+    }
+
+    EvaluateResult EvaluateAnswer(const Question& question,
+                                    const std::string& answer,
+                                    const std::vector<AnswerRecord>& history) {
+        const std::string prompt = BuildEvaluatePrompt(question, answer, history);
+        const std::string system = 
+                "你是技术面试官。你必须只输出合法 JSON，键名与示例完全一致。";
+        const std::string content = CallModel(prompt, system);
+        if (content.empty()) {
+            return BuildFallbackEvaluateResult();
+        }
+        EvaluateResult r = ParseEveluateJsonLoose(content);
+        if (r.feedback.empty() && r.score == 0 && !r.need_followup) {
+            return BuildFallbackEvaluateResult();
+        }
+        return r;
+    }
+
+    std::string BuildSummaryPrompt(
+            const std::vector<AnswerRecord>& records) const {
+        std::ostringstream oss;
+        oss << "下面是整场模拟面试的问答记录，请用中文写一段总结（纯文本，不要 JSON）。\n";
+        oss << "包含：整体表现、主要优缺点、是否达到中级 C++ 工程师预期。\n\n";
+        for (std::size_t i = 0; i < records.size(); ++i) {
+            const auto& rec = records[i];
+            oss << "--- 记录 " << (i + 1) << " ---\n";
+            oss << "题目: " << rec.question_text << "\n";
+            oss << "回答: " << rec.answer_text << "\n";
+            oss << "得分: " << rec.score << "\n\n";
+        }
+        return oss.str();
+    }
+
+    std::string BuildFallbackSummary(
+        const std::vector<AnswerRecord>& records) const {
+        std::ostringstream oss;
+        int total = 0;
+        for (const auto& rec : records) {
+            total += rec.score;
+        }
+        const int avg =
+            records.empty() ? 0 : total / static_cast<int>(records.size());
+        oss << "本地降级总结：共 " << records.size() << " 条回答，平均分约 " << avg
+            << "。";
+        return oss.str();
+    }
+
+    std::string GenerateSummary(const std::vector<AnswerRecord>& records) {
+        const std::string prompt = BuildSummaryPrompt(records);
+        const std::string system = "你是面试官助理，只输出简短中文总结段落。";
+        std::string content = CallModel(prompt, system);
+        if (content.empty()) {
+            return BuildFallbackSummary(records);
+        }
+
+        // 去掉首位空白，避免无意义空串被当成成功
+        const auto first = content.find_first_not_of(" \t\n\r");
+        const auto last = content.find_last_not_of(" \t\n\r");
+        if (first == std::string::npos) {
+            return BuildFallbackSummary(records);
+        }
+        content = content.substr(first, last - first + 1);
+        return content;
+    }
+private:
+    std::string api_url_;
+    std::string api_key_;
+    std::string model_name_;
+    double temperature_;
+    int max_tokens_;
+    int timeout_seconds_;
+};
+
+// ======================== 对外壳：仅转发 ========================
 RealLLMClient::RealLLMClient(std::string api_url,
                              std::string api_key,
                              std::string model_name,
                              double temperature,
                              int max_tokens,
                              int timeout_seconds)
-    : api_url_(std::move(api_url)),
-      api_key_(std::move(api_key)),
-      model_name_(std::move(model_name)),
-      temperature_(temperature),
-      max_tokens_(max_tokens),
-      timeout_seconds_(timeout_seconds) {}
-
+    : impl_(std::make_unique<Impl>(std::move(api_url),
+                                    std::move(api_key),
+                                    std::move(model_name),
+                                    temperature,
+                                    max_tokens,
+                                    timeout_seconds)) {}
+RealLLMClient::~RealLLMClient() = default;
 
 // 生成主问题列表。
     // 第三阶段可以先做一个最小版本：
@@ -64,10 +416,7 @@ std::vector<Question> RealLLMClient::GenerateQuestions(
     const std::string& resume_text,
     const std::string& job_description,
     int question_count) {
-    (void)resume_text;
-    (void)job_description;
-
-    return BuildDefaultQuestions(question_count);
+    return impl_->GenerateQuestion(resume_text, job_description, question_count);
 }
 
 // 评估回答。
@@ -76,13 +425,7 @@ EvaluateResult RealLLMClient::EvaluateAnswer(
     const Question& question,
     const std::string& answer,
     const std::vector<AnswerRecord>& history) {
-    std::string prompt = BuildEvaluatePrompt(question, answer, history);
-    std::string response_text = CallModel(prompt);
-
-    if (response_text.empty()) {
-        return BuildFallbackEvaluateResult();
-    }
-    return ParseEvaluateResult(response_text);
+    return impl_->EvaluateAnswer(question, answer, history);
 }
 
     // 生成整场面试总结。
@@ -90,223 +433,7 @@ EvaluateResult RealLLMClient::EvaluateAnswer(
 // 等真实评分稳定后再切到真实总结生成。
 std::string RealLLMClient::GenerateSummary(
     const std::vector<AnswerRecord>& records) {
-    return BuildFallbackSummary(records);
-}
-
-
-
-// 构造“回答评估”用的 prompt。
-// 作用：
-//   把当前题目、当前回答、历史记录组织成模型输入。
-std::string RealLLMClient::BuildEvaluatePrompt(
-    const Question& question,
-    const std::string& answer,
-    const std::vector<AnswerRecord>& history) const {
-    std::ostringstream oss;
-
-    oss << "你是一个严格的技术面试官\n";
-    oss << "请根据题目、候选人回答和历史上下文，对当前回答进行评分和反馈。\n";
-    oss << "你必须返回 JSON，不能返回额外解释。\n\n";
-
-    oss << "输出 JSON 格式如下：\n";
-    oss << "{\n";
-    oss << "  \"score\": 0,\n";
-    oss << "  \"need_followup\": false,\n";
-    oss << "  \"followup_question\": \"\",\n";
-    oss << "  \"feedback\": \"\"\n";
-    oss << "}\n\n";
-
-    oss << "评分要求：\n";
-    oss << "1. score 范围为 0 到 100。\n";
-    oss << "2. need_followup 表示是否需要继续追问。\n";
-    oss << "3. 如果 need_followup 为 true，则必须给出 followup_question。\n";
-    oss << "4. feedback 要简洁、具体，指出回答的优点和不足。\n\n";
-
-    oss << "当前题目：\n";
-    oss << question.text << "\n\n";
-
-    oss << "当前回答：\n";
-    oss << answer << "\n\n";
-
-    oss << "历史上下文：\n";
-    if (history.empty()) {
-        oss << "无\n";
-    } else {
-        for (std::size_t i = 0; i < history.size(); ++i) {
-            oss << "记录 " << (i + 1) << ":\n";
-            oss << "题目: " << history[i].question_text << "\n";
-            oss << "回答: " << history[i].answer_text << "\n";
-            oss << "得分: " << history[i].score << "\n";
-            oss << "是否为追问回答: "
-                << (history[i].is_followup_answer ? "true" : "false") << "\n\n";
-        }
-    }
-
-    return oss.str();
-}
-
-
-// 解析模型返回结果。
-// 第三阶段推荐让模型直接返回 JSON，
-// 这里把 JSON 解析为 EvaluateResult。
-// 如果解析失败，则直接返回 fallback。
-EvaluateResult RealLLMClient::ParseEvaluateResult(const std::string& response_text) const {
-    try {
-        nlohmann::json json = nlohmann::json::parse(response_text);
-
-        EvaluateResult result;
-        result.score = json.value("score", 60);
-        result.need_followup = json.value("need_followup", false);
-        result.followup_question = json.value("followup_question", "");
-        result.feedback = json.value("feedback", "模型已完成评估， 但反馈内容为空。");
-
-        if (!result.need_followup) {
-            result.followup_question.clear();
-        }
-        return result;
-    } catch (...) {
-        return BuildFallbackEvaluateResult();
-    }
-}
-
-// 调用真实大模型接口。
-// 这里按小马算力提供的 OpenAI-compatible Chat Completions 接口来发请求。
-// 返回值：
-//   成功时返回模型输出的 message.content
-//   失败时返回空字符串，由上层走 fallback 逻辑
-std::string RealLLMClient::CallModel(const std::string& prompt) const {
-    // 基本配置校验。
-    if (api_url_.empty() || api_key_.empty() || model_name_.empty()) {
-        return "";
-    }
-
-    CURL* curl = curl_easy_init();
-    if (curl == nullptr) {
-        return "";
-    }
-
-    std::string response_body;
-
-    nlohmann::json request_json;
-    request_json["model"] = model_name_;
-    request_json["temperature"] = temperature_;
-    request_json["max_tokens"] = max_tokens_;
-    request_json["stream"] = false;
-
-    request_json["messages"] = nlohmann::json::array(
-        {
-            {
-                {"role", "system"},
-                {"content",
-                 "你是一个严格的技术面试官。你必须严格按照要求返回 JSON。"}
-            },
-            {
-                {"role", "user"},
-                {"content", prompt}
-            }
-        });
-
-    std::string request_body = request_json.dump();
-
-    struct curl_slist* headers = nullptr;
-    std::string auth_header = "Authorization: Bearer " + api_key_;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, auth_header.c_str());
-
-    curl_easy_setopt(curl, CURLOPT_URL, api_url_.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
-                     static_cast<long>(request_body.size()));
-
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
-
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(timeout_seconds_));
-
-    CURLcode code = curl_easy_perform(curl);
-
-    long http_status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (code != CURLE_OK) {
-        LOG_WARN("llm http request failed at curl layer: code={}, msg={}",
-                 static_cast<int>(code), curl_easy_strerror(code));
-        return "";
-    }
-
-    if (http_status < 200 || http_status >= 300) {
-        LOG_WARN("llm http non-2xx: status={}, body={}",
-                 http_status, response_body);
-        return "";
-    }
-
-    try {
-        nlohmann::json response_json = nlohmann::json::parse(response_body);
-
-        if (!response_json.contains("choices") ||
-            !response_json["choices"].is_array() ||
-            response_json["choices"].empty()) {
-            return "";
-        }
-
-        const nlohmann::json& choice = response_json["choices"][0];
-
-        if (!choice.contains("message") ||
-            !choice["message"].contains("content")) {
-            return "";
-        }
-
-        return choice["message"]["content"].get<std::string>();
-    } catch (...) {
-        return "";
-    }
-}
-
-// 当真实模型调用失败时，提供兜底评估结果。
-EvaluateResult RealLLMClient::BuildFallbackEvaluateResult() const {
-    EvaluateResult result;
-    result.score = 60;
-    result.need_followup = false;
-    result.followup_question.clear();
-    result.feedback = "当前使用降级评估结果：模型调用失败，建议后续补充更完整的技术细节。";
-    return result;
-}
-
-// 当真实总结失败时，提供兜底总结。
-std::string RealLLMClient::BuildFallbackSummary(
-    const std::vector<AnswerRecord>& records) const {
-    std::ostringstream oss;
-
-    int total_score = 0;
-    for (const auto& record : records) {
-        total_score += record.score;
-    }
-
-    int average_score = 0;
-    if (!records.empty()) {
-        average_score = total_score / static_cast<int>(records.size());
-    }
-
-    oss << "当前使用本地降级总结。";
-    oss << "本次面试共记录 " << records.size() << " 条回答，";
-    oss << "平均分约为 " << average_score << " 分。";
-
-    if (average_score >= 85) {
-        oss << "整体表现较好，回答较完整。";
-    } else if (average_score >= 70) {
-        oss << "基础概念基本清楚，但可以继续加强细节展开。";
-    } else {
-        oss << "回答仍有提升空间，建议加强基础概念和项目表达。";
-    }
-
-    return oss.str();
+    return impl_->GenerateSummary(records);
 }
 
 }  // namespace interview::services
