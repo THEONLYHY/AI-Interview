@@ -5,9 +5,10 @@
 
 #include <cstddef>
 #include <sstream>
+#include <stdexcept>
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
 #include "common/logger.h"
 
@@ -62,14 +63,74 @@ std::string ParseChatCompletionContent(const std::string& response_body) {
     }
 }
 
-// 模型偶尔会输出带 Markdown 代码块的 JSON；尝试截取首尾花括号再解析。
+// 评估接口：模型输出单对象 JSON；截取首尾花括号再解析。
 std::string StripJsonCandidate(std::string s) {
     const auto first = s.find('{');
-    const auto last = s.find('}');
+    const auto last = s.rfind('}');
     if (first != std::string::npos && last != std::string::npos && last > first) {
         return s.substr(first, last - first + 1);
     }
     return s;
+}
+
+// 出题接口：模型应输出 JSON 数组；去掉 ``` / 多余说明后再解析。
+std::string MaybeStripMarkdownCodeFence(std::string s) {
+    const auto p = s.find("```");
+    if (p == std::string::npos) {
+        return s;
+    }
+    std::size_t q = s.find('\n', p);
+    if (q == std::string::npos) {
+        q = p + 3;
+    } else {
+        ++q;
+    }
+    const auto r = s.find("```", q);
+    if (r == std::string::npos) {
+        return s;
+    }
+    return s.substr(q, r - q);
+}
+
+void TrimAsciiWhitespace(std::string& s) {
+    const auto f = s.find_first_not_of(" \t\n\r");
+    if (f == std::string::npos) {
+        s.clear();
+        return;
+    }
+    const auto l = s.find_last_not_of(" \t\n\r");
+    s = s.substr(f, l - f + 1);
+}
+
+// 将模型回复解析为题目 JSON 数组；失败则抛异常由外层捕获。
+nlohmann::json UnwrapQuestionJsonArray(std::string s) {
+    s = MaybeStripMarkdownCodeFence(std::move(s));
+    TrimAsciiWhitespace(s);
+    if (s.empty()) {
+        throw std::invalid_argument("empty");
+    }
+
+    nlohmann::json j = nlohmann::json::parse(s);
+    if (j.is_array()) {
+        return j;
+    }
+    if (j.is_object()) {
+        if (j.contains("questions") && j["questions"].is_array()) {
+            return j["questions"];
+        }
+        if (j.contains("data") && j["data"].is_array()) {
+            return j["data"];
+        }
+    }
+    const auto first = s.find('[');
+    const auto last = s.rfind(']');
+    if (first != std::string::npos && last != std::string::npos && last > first) {
+        j = nlohmann::json::parse(s.substr(first, last - first + 1));
+        if (j.is_array()) {
+            return j;
+        }
+    }
+    throw std::invalid_argument("not a JSON array");
 }
 
 // 评估接口要求模型只输出 JSON；这里做一次宽松提取。
@@ -230,10 +291,7 @@ public:
     std::vector<Question> ParseQuestionArray(
         const std::string& response_text) const {
         try {
-            const nlohmann::json root = nlohmann::json::parse(StripJsonCandidate(response_text));
-            if (!root.is_array()) {
-                return {};
-            }
+            const nlohmann::json root = UnwrapQuestionJsonArray(response_text);
             std::vector<Question> out;
             out.reserve(root.size());
             for (const auto& item : root) {

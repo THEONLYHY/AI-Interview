@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.16)
+# vcpkg 传递依赖（如 utf8cpp）可能使用 $<COMPILE_ONLY:...>，需 CMake 3.27+
+cmake_minimum_required(VERSION 3.27)
 
 project(ai_interview LANGUAGES CXX)
 
@@ -14,12 +15,17 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# 单测依赖 GoogleTest：请自行在仓库根目录 clone 源码到 third_party/googletest（不用 FetchContent）。
+#   git clone --depth 1 --branch v1.17.0 https://github.com/google/googletest.git third_party/googletest
+option(AI_INTERVIEW_BUILD_TESTS "Build protocol unit tests with local third_party/googletest" ON)
+
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(CURL REQUIRED)
 # Protocol::CompressGzip / DecompressGzip 需要 zlib
 find_package(ZLIB REQUIRED)
+find_package(podofo CONFIG REQUIRED)
 
 set(PROJECT_INCLUDE_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -41,61 +47,14 @@ set(SERVICES_SOURCES
     src/services/real_llm_client.cc
     src/services/mock_realtime_client.cc
     src/services/real_realtime_client.cc
+    src/services/pdf_parser.cc
 )
 
 set(MAIN_SOURCES
-    main/test.cc
+    #main/test.cc
     # main/dialog_session_realtime_demo_main.cc
+    main/interview_text_pipeline_main.cc
 )
-
-# add_executable(protocol_demo
-#     main/protocol_demo_main.cc
-#     ${COMMON_SOURCES}
-# )
-
-# target_include_directories(protocol_demo
-#     PRIVATE
-#         ${PROJECT_INCLUDE_DIR}
-# )
-
-# target_link_libraries(protocol_demo
-#     PRIVATE
-#         nlohmann_json::nlohmann_json
-#         spdlog::spdlog
-#         Boost::system
-#         CURL::libcurl
-# )
-
-# add_executable(interview_demo
-#     main/interview_demo_main.cc
-#     ${COMMON_SOURCES}
-#     ${INTERVIEW_SOURCES}
-#     ${SERVICES_SOURCES}
-# )
-
-# target_include_directories(interview_demo
-#     PRIVATE
-#         ${PROJECT_INCLUDE_DIR}
-# )
-
-# target_link_libraries(interview_demo
-#     PRIVATE
-#         nlohmann_json::nlohmann_json
-#         spdlog::spdlog
-#         Boost::system
-#         CURL::libcurl
-# )
-
-
-
-
-# if(MSVC)
-#     target_compile_options(protocol_demo PRIVATE /W4)
-#     target_compile_options(interview_demo PRIVATE /W4)
-# else()
-#     target_compile_options(protocol_demo PRIVATE -Wall -Wextra -Wpedantic)
-#     target_compile_options(interview_demo PRIVATE -Wall -Wextra -Wpedantic)
-# endif()
 
 add_executable(ai_interview
     ${MAIN_SOURCES}
@@ -103,7 +62,6 @@ add_executable(ai_interview
     ${INTERVIEW_SOURCES}
     ${SERVICES_SOURCES}
 )
-
 
 #头文件目录，把include/加入头文件搜索路径
 target_include_directories(ai_interview
@@ -118,35 +76,84 @@ target_link_libraries(ai_interview
         Boost::system
         CURL::libcurl
         ZLIB::ZLIB
+        podofo::podofo
 )
 
-# 阶段 5：Mock 实时层脚本 + DialogSession 事件驱动（不依赖真 WSS）
-add_executable(dialog_session_realtime_demo
-    main/dialog_session_realtime_demo_main.cc
-    ${COMMON_SOURCES}
-    ${INTERVIEW_SOURCES}
-    ${SERVICES_SOURCES}
-)
+# # 阶段 5：Mock 实时层脚本 + DialogSession 事件驱动（不依赖真 WSS）
+# add_executable(dialog_session_realtime_demo
+#     main/dialog_session_realtime_demo_main.cc
+#     ${COMMON_SOURCES}
+#     ${INTERVIEW_SOURCES}
+#     ${SERVICES_SOURCES}
+# )
 
-target_include_directories(dialog_session_realtime_demo
-    PRIVATE
-        ${PROJECT_INCLUDE_DIR}
-)
+# target_include_directories(dialog_session_realtime_demo
+#     PRIVATE
+#         ${PROJECT_INCLUDE_DIR}
+# )
 
-target_link_libraries(dialog_session_realtime_demo
-    PRIVATE
-        nlohmann_json::nlohmann_json
-        spdlog::spdlog
-        Boost::system
-        CURL::libcurl
-        ZLIB::ZLIB
-)
+# target_link_libraries(dialog_session_realtime_demo
+#     PRIVATE
+#         nlohmann_json::nlohmann_json
+#         spdlog::spdlog
+#         Boost::system
+#         CURL::libcurl
+#         ZLIB::ZLIB
+#         podofo::podofo
+# )
 
 #警告选项
 if(MSVC)
     target_compile_options(ai_interview PRIVATE /W4)
-    target_compile_options(dialog_session_realtime_demo PRIVATE /W4)
+    #target_compile_options(dialog_session_realtime_demo PRIVATE /W4)
 else()
     target_compile_options(ai_interview PRIVATE -Wall -Wextra -Wpedantic)
-    target_compile_options(dialog_session_realtime_demo PRIVATE -Wall -Wextra -Wpedantic)
+    #target_compile_options(dialog_session_realtime_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(AI_INTERVIEW_BUILD_TESTS)
+    set(GOOGLETEST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest")
+    if(NOT EXISTS "${GOOGLETEST_ROOT}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "未找到 GoogleTest 源码 (${GOOGLETEST_ROOT})。请先 clone：\n"
+            "  git clone --depth 1 --branch v1.17.0 "
+            "https://github.com/google/googletest.git third_party/googletest\n"
+            "或关闭测试：cmake ... -DAI_INTERVIEW_BUILD_TESTS=OFF")
+    endif()
+
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    add_subdirectory("${GOOGLETEST_ROOT}"
+        "${CMAKE_BINARY_DIR}/third_party/googletest-build"
+        EXCLUDE_FROM_ALL)
+
+    enable_testing()
+    include(GoogleTest)
+
+    add_executable(ai_interview_tests
+        tests/config_test.cc
+        tests/dialog_session_test.cc
+        tests/interview_session_test.cc
+        tests/protocol_smoke_test.cc
+        src/common/config.cc
+        src/common/logger.cc
+        src/common/protocol.cc
+        src/interview/dialog_session.cc
+        src/interview/interview_session.cc
+        src/services/mock_llm_client.cc
+        src/services/mock_realtime_client.cc
+    )
+    target_include_directories(ai_interview_tests PRIVATE ${PROJECT_INCLUDE_DIR})
+    target_link_libraries(ai_interview_tests PRIVATE
+        GTest::gtest_main
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+        ZLIB::ZLIB
+    )
+    if(MSVC)
+        target_compile_options(ai_interview_tests PRIVATE /W4)
+    else()
+        target_compile_options(ai_interview_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    gtest_discover_tests(ai_interview_tests)
 endif()

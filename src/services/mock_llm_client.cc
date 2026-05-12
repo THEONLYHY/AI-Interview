@@ -9,18 +9,23 @@ using interview::common::EvaluateResult;
 using interview::common::Question;
 
 // 生成固定主问题列表。
-// 第三阶段接口已经支持 resume_text、job_description 和 question_count，
-// 但 mock 实现里先不使用前两个参数，只根据 question_count 截取固定题目。
+// resume_text / job_description 在 mock 中不参与模型推理；若有简历文本，仅在题干中标注已载入规模，
+// 便于本地演示时确认 PDF → InterviewSession 链路。
 std::vector<Question> MockLLMClient::GenerateQuestions(
     const std::string& resume_text,
     const std::string& job_description,
     int question_count) {
 
-    (void)resume_text;
     (void)job_description;
 
+    std::string q1_text = "请介绍一下 RAII";
+    if (!resume_text.empty()) {
+        q1_text = "（上下文：已载入简历 " + std::to_string(resume_text.size()) +
+                  " 字；本题仍为离线固定模板）请介绍一下 RAII";
+    }
+
     std::vector<Question> questions = {
-        {1, "请介绍一下 RAII", false, -1},
+        {1, q1_text, false, -1},
         {2, "请说一下智能指针的作用", false, -1},
         {3, "请解释 epoll 和 select 的区别", false, -1}
     };
@@ -59,11 +64,11 @@ EvaluateResult MockLLMClient::EvaluateAnswer(
     // 第一阶段先给固定风格的追问。
     // 这里根据题目内容返回不同追问，能让控制台流程更像真实面试。
     if (result.need_followup) {
-        if (question.text == "请介绍一下 RAII") {
+        if (question.id == 1) {
             result.followup_question = "RAII 在异常安全里有什么作用？";
-        } else if (question.text == "请说一下智能指针的作用") {
+        } else if (question.id == 2) {
             result.followup_question = "shared_ptr 和 unique_ptr 的区别是什么？";
-        } else if (question.text == "请解释 epoll 和 select 的区别") {
+        } else if (question.id == 3) {
             result.followup_question = "epoll 为什么在高并发场景下更有优势？";
         } else {
             result.followup_question = "你可以再补充一下实现原理和使用场景吗？";

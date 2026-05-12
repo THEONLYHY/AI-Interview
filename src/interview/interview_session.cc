@@ -8,13 +8,17 @@ using interview::common::InterviewReport;
 using interview::common::Question;
 using interview::services::LLMClient;
 
-InterviewSession::InterviewSession(std::unique_ptr<LLMClient> llm_client)
-: llm_client_(std::move(llm_client)){
-
-}
+InterviewSession::InterviewSession(std::unique_ptr<LLMClient> llm_client,
+                                   std::string resume_text)
+    : llm_client_(std::move(llm_client)),
+      resume_text_(std::move(resume_text)) {}
 
 void InterviewSession::Start() {
-    questions_ = llm_client_->GenerateQuestions("", "", 3);
+     // 路线图阶段 6：岗位描述可先写死为 "C++ 工程师"，后续可从 Config 注入
+    constexpr const char* kJobDescription = "C++ 工程师";
+    constexpr int kQuestionCount = 3;
+
+    questions_ = llm_client_->GenerateQuestions(resume_text_, kJobDescription, kQuestionCount);
 
     current_index_ = 0;
     started_ = true;

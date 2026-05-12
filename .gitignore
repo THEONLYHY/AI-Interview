@@ -1,10 +1,10 @@
-cat > .gitignore <<'EOF'
 # Build directories
 build/
+build_*/
 cmake-build-*/
 out/
 
-# CMake generated files
+# CMake generated files (when building in-tree by mistake)
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
@@ -42,7 +42,11 @@ Thumbs.db
 # Environment / secrets
 .env
 .env.*
-config.local.json
 secrets.json
-EOFconfig/local_config.json
+config.local.json
+
+# Local overrides (keep defaults in repo only if intended)
 config/local_config.json
+
+# GoogleTest：本地 git clone，不纳入版本库（见 CMakeLists.txt 说明）
+third_party/googletest/

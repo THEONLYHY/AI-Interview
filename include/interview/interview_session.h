@@ -18,7 +18,8 @@ namespace interview::session {
 class InterviewSession {
 public:
     explicit InterviewSession(
-        std::unique_ptr<interview::services::LLMClient> llm_client);
+        std::unique_ptr<interview::services::LLMClient> llm_client, 
+                        std::string resume_text = {});
 
     void Start();
 
@@ -53,6 +54,8 @@ private:
     bool has_pending_followup_ = false;
     // 当前缓存的待处理的追问题目
     interview::common::Question pending_followup_question_;
+
+    std::string resume_text_;
 };
 
 }  // namespace interview::session

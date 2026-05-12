@@ -200,6 +200,10 @@ void DialogSession::SpeakText(const std::string& text) {
 }
 
 void DialogSession::HandleAsrFinalized() {
+    if (!is_running_.load()) {
+        current_asr_text_.clear();
+        return;
+    }
     SetState(DialogState::kInterviewerThinking);
 
     if (current_asr_text_.empty()) {
