@@ -23,8 +23,8 @@
     },
 
     "llm": {
-        "api_url": "https://api.tokenpony.cn/v1/chat/completions",
-        "api_key": "sk-aac063355dc94a0894ac1c375a9bb19c",
+        "api_url": "你的api_url",
+        "api_key": "你的api_key",
         "model": "qwen3-8b",
         "temperature": 0.3,
         "max_tokens": 32000,
