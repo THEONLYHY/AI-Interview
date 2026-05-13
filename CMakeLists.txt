@@ -15,13 +15,12 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# 单测依赖 GoogleTest：请自行在仓库根目录 clone 源码到 third_party/googletest（不用 FetchContent）。
-#   git clone --depth 1 --branch v1.17.0 https://github.com/google/googletest.git third_party/googletest
+
 option(AI_INTERVIEW_BUILD_TESTS "Build protocol unit tests with local third_party/googletest" ON)
 
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system)
+find_package(boost_system CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 # Protocol::CompressGzip / DecompressGzip 需要 zlib
 find_package(ZLIB REQUIRED)

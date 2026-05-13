@@ -3,29 +3,30 @@
 
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 namespace interview::common {
 
+
+// "X-Api-App-ID":
+// "X-Api-Access-Key": 
+// "X-Api-Resource-Id": 
+// "X-Api-App-Key": 
+// "X-Api-Connect-Id": 
+struct WsHeadersConfig {
+    std::string api_app_id;
+    std::string api_access_key;
+    std::string api_resource_id;
+    std::string api_app_key;
+    std::string api_connect_id;
+};
+
 // WebSocket 相关配置。
-// 第四阶段以后接实时语音链路时会用到。
+// base_url 表示服务地址；headers 存放握手时需要注入的业务头。
 struct WsConfig {
     // WebSocket 服务地址。
     std::string base_url;
-
-    // 请求头中的 App ID。
-    std::string api_app_id;
-
-    // 请求头中的 Access Key。
-    std::string api_access_key;
-
-    // 请求头中的 Resource ID。
-    std::string api_resource_id;
-
-    // 请求头中的 App Key。
-    std::string api_app_key;
-
-    // 请求头中的 Connect ID。
-    // 如果配置文件里为空，后续也可以在运行时自动生成。
-    std::string api_connect_id;
+    WsHeadersConfig headers;
 };
 
 struct LLMConfig {
@@ -49,6 +50,21 @@ struct LLMConfig {
     // 超时时间，单位秒。
     int timeout_seconds = 60;
 };
+
+// 实时对话中的 dialog 配置。
+// 这些字段后续会由 Config::BuildStartSessionPayload() 统一组装成
+// StartSession 请求体，避免把业务配置拼装逻辑散落到网络层里。
+struct DialogConfig {
+    std::string bot_name = "AI面试官";
+    std::string system_role = "你是一名严格但友好的技术面试官";
+    std::string speaking_style = "professional";
+    std::string city = "wuhan";
+    bool strict_audio = false;
+    std::string audit_response = "抱歉，这个问题我不能回答。";
+    int recv_timeout = 5000;
+    std::string input_mod = "audio";
+};
+
 
 // 项目总配置。
 // 把 ws 和 llm 两部分统一收口。
