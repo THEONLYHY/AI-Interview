@@ -160,7 +160,7 @@ int main(int argc, char* argv[]) {
 
     common::AppConfig config;
     try {
-        config = common::LoadConfig("config/default_config.json");
+        config = common::LoadConfig("config/local_config.json");
     } catch (const std::exception& e) {
         LOG_ERROR("load config failed : {}", e.what());
         return 1;
