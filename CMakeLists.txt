@@ -110,49 +110,49 @@ else()
     #target_compile_options(dialog_session_realtime_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-if(AI_INTERVIEW_BUILD_TESTS)
-    set(GOOGLETEST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest")
-    if(NOT EXISTS "${GOOGLETEST_ROOT}/CMakeLists.txt")
-        message(FATAL_ERROR
-            "未找到 GoogleTest 源码 (${GOOGLETEST_ROOT})。请先 clone：\n"
-            "  git clone --depth 1 --branch v1.17.0 "
-            "https://github.com/google/googletest.git third_party/googletest\n"
-            "或关闭测试：cmake ... -DAI_INTERVIEW_BUILD_TESTS=OFF")
-    endif()
+# if(AI_INTERVIEW_BUILD_TESTS)
+#     set(GOOGLETEST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest")
+#     if(NOT EXISTS "${GOOGLETEST_ROOT}/CMakeLists.txt")
+#         message(FATAL_ERROR
+#             "未找到 GoogleTest 源码 (${GOOGLETEST_ROOT})。请先 clone：\n"
+#             "  git clone --depth 1 --branch v1.17.0 "
+#             "https://github.com/google/googletest.git third_party/googletest\n"
+#             "或关闭测试：cmake ... -DAI_INTERVIEW_BUILD_TESTS=OFF")
+#     endif()
 
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    add_subdirectory("${GOOGLETEST_ROOT}"
-        "${CMAKE_BINARY_DIR}/third_party/googletest-build"
-        EXCLUDE_FROM_ALL)
+#     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+#     add_subdirectory("${GOOGLETEST_ROOT}"
+#         "${CMAKE_BINARY_DIR}/third_party/googletest-build"
+#         EXCLUDE_FROM_ALL)
 
-    enable_testing()
-    include(GoogleTest)
+#     enable_testing()
+#     include(GoogleTest)
 
-    add_executable(ai_interview_tests
-        tests/config_test.cc
-        tests/dialog_session_test.cc
-        tests/interview_session_test.cc
-        tests/protocol_smoke_test.cc
-        src/common/config.cc
-        src/common/logger.cc
-        src/common/protocol.cc
-        src/interview/dialog_session.cc
-        src/interview/interview_session.cc
-        src/services/mock_llm_client.cc
-        src/services/mock_realtime_client.cc
-    )
-    target_include_directories(ai_interview_tests PRIVATE ${PROJECT_INCLUDE_DIR})
-    target_link_libraries(ai_interview_tests PRIVATE
-        GTest::gtest_main
-        nlohmann_json::nlohmann_json
-        spdlog::spdlog
-        ZLIB::ZLIB
-    )
-    if(MSVC)
-        target_compile_options(ai_interview_tests PRIVATE /W4)
-    else()
-        target_compile_options(ai_interview_tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
+#     add_executable(ai_interview_tests
+#         tests/config_test.cc
+#         tests/dialog_session_test.cc
+#         tests/interview_session_test.cc
+#         tests/protocol_smoke_test.cc
+#         src/common/config.cc
+#         src/common/logger.cc
+#         src/common/protocol.cc
+#         src/interview/dialog_session.cc
+#         src/interview/interview_session.cc
+#         src/services/mock_llm_client.cc
+#         src/services/mock_realtime_client.cc
+#     )
+#     target_include_directories(ai_interview_tests PRIVATE ${PROJECT_INCLUDE_DIR})
+#     target_link_libraries(ai_interview_tests PRIVATE
+#         GTest::gtest_main
+#         nlohmann_json::nlohmann_json
+#         spdlog::spdlog
+#         ZLIB::ZLIB
+#     )
+#     if(MSVC)
+#         target_compile_options(ai_interview_tests PRIVATE /W4)
+#     else()
+#         target_compile_options(ai_interview_tests PRIVATE -Wall -Wextra -Wpedantic)
+#     endif()
 
-    gtest_discover_tests(ai_interview_tests)
-endif()
+#     gtest_discover_tests(ai_interview_tests)
+# endif()

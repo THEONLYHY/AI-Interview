@@ -115,6 +115,7 @@ std::vector<common::ParsedResponse> BuildStdinHandshakeScript(const std::string&
     return script;
 }
 
+
 }  // namespace
 
 int main(int argc, char* argv[]) {

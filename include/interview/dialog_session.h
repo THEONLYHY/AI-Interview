@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <mutex>
 
 #include "common/dialog_state.h"
 #include "common/protocol.h"
@@ -41,7 +42,7 @@ public:
 
     void Stop();
 
-    interview::common::DialogState state() const;
+    interview::common::DialogState State() const;
 
 private:
     void SetState(interview::common::DialogState new_state);
@@ -67,7 +68,14 @@ private:
     std::unique_ptr<InterviewSession> interview_session_;
     std::unique_ptr<interview::services::RealtimeClient> realtime_client_;
 
+
     interview::common::DialogState state_ = interview::common::DialogState::kInit;
+    mutable std::mutex state_mutex_;    
+
+    // data_mutex_ 保护服务端事件携带的会话数据。
+    // session_id_ 在 kSessionStarted 中写入，SpeakText/SendAudio 等发送路径读取；
+    // current_asr_text_ 由 ASR 事件持续覆盖，kAsrEnded 时提交给 InterviewSession。
+    mutable std::mutex data_mutex_;
 
     // OnServerEvent 在工作线程、Run*/Stop 在主线程，需原子避免 data race
     std::atomic<bool> is_running_{false};

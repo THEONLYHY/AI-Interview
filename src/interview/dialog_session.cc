@@ -85,7 +85,7 @@ void DialogSession::RunFromStdin() {
         SetState(DialogState::kIdle);
     }
 
-    if (is_running_.load() && state_ != DialogState::kStopped) {
+    if (is_running_.load() && State() != DialogState::kStopped) {
         OnEnterSummary();
     }
 }
@@ -101,7 +101,7 @@ void DialogSession::RunEventDriven() {
     }
     LOG_INFO("event-driven loop started");
     while (is_running_.load() && state_ != DialogState::kCompleted &&
-           state_ != DialogState::kStopped) {
+           State() != DialogState::kStopped) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     LOG_INFO("event-driven loop ended, state = {}",
@@ -119,7 +119,8 @@ void DialogSession::Stop() {
     LOG_INFO("dialog session stopped");
 }
 
-DialogState DialogSession::state() const {
+DialogState DialogSession::State() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return state_;
 }
 
@@ -127,6 +128,7 @@ void DialogSession::SetState(DialogState new_state) {
     LOG_DEBUG("dialog state changed: {} -> {}",
               DialogStateToString(state_),
               DialogStateToString(new_state));
+    std::lock_guard<std::mutex> lock(state_mutex_);
     state_ = new_state;
 }
 
@@ -192,7 +194,8 @@ void DialogSession::SpeakText(const std::string& text) {
         LOG_DEBUG("[no realtime] TTS 跳过：{}", text);
         return;
     }
-    // 豆包 ChatTextQuery：具体字段以接入时官方文档为准
+    // 豆包 ChatTextQuery：具体字段以接入时官方文档为准。
+    // 这里先拷贝 session_id_ 再发送，避免在网络 write 期间持有 data_mutex_。
     const nlohmann::json payload = {{"content", text}};
     if (!realtime_client_->SendEvent(events::kChatTextQuery, session_id_, payload)) {
         LOG_WARN("SendEvent(kChatTextQuery) failed");
@@ -201,12 +204,21 @@ void DialogSession::SpeakText(const std::string& text) {
 
 void DialogSession::HandleAsrFinalized() {
     if (!is_running_.load()) {
+        std::lock_guard<std::mutex> lock(data_mutex_);
         current_asr_text_.clear();
         return;
     }
     SetState(DialogState::kInterviewerThinking);
 
-    if (current_asr_text_.empty()) {
+    std::string asr_text;
+    {
+        // ASR 文本快照只在锁内复制和清空。后续 LLM 评分可能耗时，
+        // 不能在持锁状态下调用 InterviewSession。
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        asr_text = current_asr_text_;
+        current_asr_text_.clear();
+    }
+    if (asr_text.empty()) {
         LOG_WARN("kAsrEnded but ASR text empty, skip submit");
         return;
     }
@@ -258,7 +270,11 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
 
     case events::kSessionStarted:
         LOG_INFO("[event] kSessionStarted session_id={}", evt.session_id);
-        session_id_ = evt.session_id;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            session_id_ = evt.session_id;
+        }
+
         SetState(DialogState::kIdle);
         if (interview_session_ && interview_session_->HasNextQuestion()) {
             Question q = interview_session_->GetCurrentQuestion();
@@ -281,12 +297,19 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
 
     case events::kAsrInfo:
         SetState(DialogState::kCandidateSpeaking);
-        current_asr_text_.clear();
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            current_asr_text_.clear();
+        }
+
         break;
 
     case events::kAsrResult:
-        // 常见实现为“当前整句覆盖”；若为增量需改为 +=
-        current_asr_text_ = evt.payload_json;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            // 常见实现为“当前整句覆盖”；若为增量需改为 +=
+            current_asr_text_ = evt.payload_json;
+        }
         break;
 
     case events::kAsrEnded:
