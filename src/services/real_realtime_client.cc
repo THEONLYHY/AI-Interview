@@ -421,7 +421,8 @@ public:
         }
 
         const bool was_connected = connected_.load();
-        if (was_connected) {
+        const bool can_send_protocol_close = was_connected && !failed_.load();
+        if (can_send_protocol_close) {
             std::string sid;
             // 读取当前session_id
             // session_id 会被接收线程更新，所以要加锁
@@ -433,6 +434,8 @@ public:
             // 如果已有 session_id, 说明 sessino很可能已经启动
             // 先通知服务端结束 session
             if (!sid.empty()) {
+                // FinishSession / FinishConnection 是协议层优雅关闭。
+                // 等待最多 3 秒，不让服务端缺失确认导致本地 Stop 永久阻塞。
                 ForgetEvent(interview::common::events::kSessionFinished);
                 // 发送FinishSession
                 // Close阶段即使发送失败，也继续关闭，所以忽略返回值
@@ -456,17 +459,8 @@ public:
         running_.store(false);
         // 标记当前已经不再连接。
         connected_.store(false);
-        // 关闭WebSocket
-        // 使用 error_code 版本，避免 close 抛异常影响析构或关闭流程。
-        if (ws_) {
-            beast::error_code ec;
-            ws_->close(websocket::close_code::normal, ec);
-            if (ec) {
-                // Close阶段出现错误通常可以忽略
-                // 例如连接已经被服务端关闭
-                LOG_DEBUG("[RealRealtimeClient] websocket close ignored: {}", ec.message());
-            }
-        }
+        
+        CloseTransport();
         // 停止 io_context
         ioc_.stop();
         // 等待接收线程退出
@@ -668,6 +662,39 @@ private:
         seen_events_.erase(event);
     }
 
+    void CloseTransport() {
+        if (!ws_) {
+            return;
+        }
+
+        // The receive thread may already have consumed a WebSocket close frame
+        // from the server. Calling websocket::close() after that state trips a
+        // Beast debug assertion, so local shutdown uses the lowest TCP layer to
+        // release the blocking read and then joins the thread.
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        beast::error_code ec;
+
+        beast::get_lowest_layer(*ws_).cancel();
+        if (ec) {
+            LOG_DEBUG("[RealRealtimeClient] transport cancel ignored: {}",
+                      ec.message());
+        }
+
+        ec = {};
+        beast::get_lowest_layer(*ws_).socket().shutdown(
+            tcp::socket::shutdown_both, ec);
+        if (ec && ec != asio::error::not_connected) {
+            LOG_DEBUG("[RealRealtimeClient] transport shutdown ignored: {}",
+                      ec.message());
+        }
+
+        ec = {};
+        beast::get_lowest_layer(*ws_).socket().close(ec);
+        if (ec) {
+            LOG_DEBUG("[RealRealtimeClient] transport close ignored: {}",
+                      ec.message());
+        }
+    }
     /**
      * 等待接收线程退出。
      *
@@ -687,6 +714,7 @@ private:
         }
         recv_thread_.join();
     }
+
 private:
     // 例如：wss://openspeech.bytedance.com/api/v3/realtime/dialogue
     std::string server_url_;

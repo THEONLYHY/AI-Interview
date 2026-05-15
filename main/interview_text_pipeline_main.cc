@@ -31,6 +31,7 @@ struct RealWssSmokeState {
     std::mutex mutex;
     std::condition_variable cv;
     std::string session_id;
+    std::string failure_reason;
     std::size_t tts_bytes = 0;
     bool tts_ended = false;
     bool failed = false;
@@ -179,6 +180,11 @@ int RunRealWssSmoke(const common::AppConfig& config,
     RealWssSmokeState state;
     services::RealRealtimeClient client(config.ws.base_url);
 
+    if (config.dialog.input_mod == "audio") {
+        LOG_WARN("[smoke] dialog.input_mod=audio; text smoke sends no PCM and "
+                 "may hit DialogAudioIdleTimeoutError");
+    }
+
     client.SetEventHandler([&state](const common::ParsedResponse& evt) {
         if (evt.code != 0) {
             LOG_ERROR("[smoke] server error code={} payload={}",
@@ -186,6 +192,9 @@ int RunRealWssSmoke(const common::AppConfig& config,
             {
                 std::lock_guard<std::mutex> lock(state.mutex);
                 state.failed = true;
+                state.failure_reason =
+                    "server error code=" + std::to_string(evt.code) +
+                    " payload=" + evt.payload_json;
             }
             state.cv.notify_all();
             return;
@@ -248,6 +257,17 @@ int RunRealWssSmoke(const common::AppConfig& config,
     const auto timeout = std::chrono::seconds(wait_seconds);
     if (!WaitForSessionId(state, timeout)) {
         LOG_ERROR("[smoke] session id not received");
+        std::string reason;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            reason = state.failure_reason;
+        }
+
+        if (!reason.empty()) {
+            LOG_ERROR("[smoke] session failed before id : {}", reason);
+        } else {
+            LOG_ERROR("[smoke] session id not received");
+        }
         client.Close();
         return 4;
     }
@@ -267,6 +287,16 @@ int RunRealWssSmoke(const common::AppConfig& config,
 
     if (!WaitForTtsEnded(state, timeout)) {
         LOG_ERROR("[smoke] TTS did not finish within {} seconds", wait_seconds);
+        std::string reason;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            reason = state.failure_reason;
+        }
+        if (!reason.empty()) {
+            LOG_ERROR("[smoke] session failed before id : {}", reason);
+        } else {
+            LOG_ERROR("[smoke] session id not received");
+        }
         client.Close();
         return 6;
     }
