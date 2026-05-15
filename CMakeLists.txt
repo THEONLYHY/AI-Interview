@@ -18,13 +18,31 @@ endif()
 
 option(AI_INTERVIEW_BUILD_TESTS "Build protocol unit tests with local third_party/googletest" ON)
 
+
+find_package(OpenSSL REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system thread)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(spdlog CONFIG REQUIRED)
-find_package(boost_system CONFIG REQUIRED)
-find_package(CURL REQUIRED)
-# Protocol::CompressGzip / DecompressGzip 需要 zlib
 find_package(ZLIB REQUIRED)
+find_package(portaudio CONFIG REQUIRED)
+find_package(CURL REQUIRED)
 find_package(podofo CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+
+# Qt依赖（必需，vcpkg的qtbase是Qt6）
+# find_package(Qt6 COMPONENTS Core Widgets Gui QUIET)
+# if(Qt6_FOUND)
+#     set(QT_VERSION_MAJOR 6)
+#     message(STATUS "Found Qt6")
+# else()
+#     # 尝试Qt5
+#     find_package(Qt5 COMPONENTS Core Widgets Gui QUIET)
+#     if(Qt5_FOUND)
+#         set(QT_VERSION_MAJOR 5)
+#         message(STATUS "Found Qt5")
+#     else()
+#         message(FATAL_ERROR "Qt not found! Please install Qt via vcpkg: vcpkg install qtbase")
+#     endif()
+# endif()
 
 set(PROJECT_INCLUDE_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -73,6 +91,10 @@ target_link_libraries(ai_interview
         nlohmann_json::nlohmann_json
         spdlog::spdlog
         Boost::system
+        Boost::thread
+        OpenSSL::SSL
+        OpenSSL::Crypto
+
         CURL::libcurl
         ZLIB::ZLIB
         podofo::podofo

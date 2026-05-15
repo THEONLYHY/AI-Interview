@@ -4,9 +4,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <exception>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -184,6 +186,49 @@ std::string HostHeader(const UrlParts& parts) {
     return parts.host + ":" + parts.port;
 }
 
+// StartSession 是会话级请求，V1 二进制协议要求帧体中必须有
+// [session_id_size 4B] + [session_id bytes]，然后才是
+// [payload_size 4B] + [payload bytes]。
+//
+// StartConnection 仍然是连接级请求，不携带 session_id；但一旦进入
+// StartSession，客户端需要先生成一个本轮会话 ID 写入请求帧。否则服务端
+// 会把 payload_size 错读成 session_id_size，随后继续读 payload_size 时
+// 就会出现 "parse payload size failed: body too short"。
+std::string GenerateSessionId() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> hex_digit(0, 15);
+    std::uniform_int_distribution<int> uuid_variant(8, 11);
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+
+    // UUID v4 text form: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx.
+    // Version is fixed to 4; variant y must be one of 8, 9, a, b.
+    for (int i = 0; i < 8; ++i) {
+        oss << hex_digit(gen);
+    }
+    oss << '-';
+    for (int i = 0; i < 4; ++i) {
+        oss << hex_digit(gen);
+    }
+    oss << "-4";
+    for (int i = 0; i < 3; ++i) {
+        oss << hex_digit(gen);
+    }
+    oss << '-';
+    oss << uuid_variant(gen);
+    for (int i = 0; i < 3; ++i) {
+        oss << hex_digit(gen);
+    }
+    oss << '-';
+    for (int i = 0; i < 12; ++i) {
+        oss << hex_digit(gen);
+    }
+
+    return oss.str();
+}
+
 }
 // Impl：阶段 5 占位实现
 // 阶段 7 这里会接入 boost::asio::io_context / ssl::context / websocket::stream
@@ -322,12 +367,20 @@ public:
                     "timeout waiting for kConnectionStarted");
             }
 
+            const std::string start_session_id = GenerateSessionId();
+            {
+                std::lock_guard<std::mutex> lock(event_mutex_);
+                session_id_ = start_session_id;
+            }
+            LOG_INFO("[RealRealtimeClient] starting session session_id={}",
+                     start_session_id);
+
             // 构造StartSession payload
             const nlohmann::json payload = 
                         interview::common::Config::Instance().BuildStartSessionPayload();
 
             // 发送StartSession事件
-            if (!SendEvent(interview::common::events::kStartSession, "", payload)) {
+            if (!SendEvent(interview::common::events::kStartSession, start_session_id, payload)) {
                 throw std::runtime_error("failed to send StartSession");
             }
 
@@ -498,7 +551,7 @@ public:
     }
 
     bool IsConnected() const {
-        return false;
+        return connected_.load();
     }   
     
 private:
@@ -532,7 +585,7 @@ private:
                 EventHandler handler;
                 {
                     std::lock_guard<std::mutex> lock(handler_mutex_);
-                    handler = handler;
+                    handler = handler_;
                 }
 
                 if (handler) {
@@ -601,6 +654,7 @@ private:
                     failed_.load() ||
                     !running_.load();
         });
+        return ready && seen_events_.count(event) != 0 && !failed_.load();
     }
 
     /**
@@ -657,7 +711,6 @@ private:
     // 已经收到过的事件合集
     std::set<uint32_t> seen_events_;
     // 当前session ID
-    // 通常由服务端事件返回后保存
     std::string session_id_;
 
     std::thread recv_thread_;

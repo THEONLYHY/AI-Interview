@@ -1,10 +1,15 @@
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "common/config.h"
 #include "common/logger.h"
@@ -16,12 +21,21 @@
 #include "services/mock_realtime_client.h"
 #include "services/pdf_parser.h"
 #include "services/real_llm_client.h"
+#include "services/real_realtime_client.h"
 
 using namespace interview;
 
 namespace {
 
-// 将简历正文压成单行并截断，便于日志确认 PDF 抽取是否生效（不含换行与过长输出）。
+struct RealWssSmokeState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::string session_id;
+    std::size_t tts_bytes = 0;
+    bool tts_ended = false;
+    bool failed = false;
+};
+
 std::string ResumePreviewForLog(const std::string& s, std::size_t max_len) {
     std::string out;
     bool prev_space = false;
@@ -46,8 +60,9 @@ std::string ResumePreviewForLog(const std::string& s, std::size_t max_len) {
     return out;
 }
 
-common::ParsedResponse MakeEvent(uint32_t event_id, std::string session_id = {},
-        std::string payload_json = {}) {
+common::ParsedResponse MakeEvent(uint32_t event_id,
+                                 std::string session_id = {},
+                                 std::string payload_json = {}) {
     common::ParsedResponse e;
     e.event = event_id;
     e.session_id = std::move(session_id);
@@ -56,58 +71,61 @@ common::ParsedResponse MakeEvent(uint32_t event_id, std::string session_id = {},
 }
 
 void PrintUsage(const char* prog) {
-    std::cerr << "用法:\n"
-              << "  " << prog << " [选项] [简历.pdf]\n\n"
-              << "默认流程（与仓库主线一致）：\n"
-              << "  读取 config/default_config.json → 抽取 PDF 为纯文本（日志会打出预览）\n"
-              << "  → RealLLMClient / MockLLMClient 出题 → MockRealtimeClient 脚本模拟 ASR\n"
-              << "  → DialogSession::RunEventDriven()\n\n"
-              << "选项:\n"
-              << "  --mock-llm     使用 MockLLMClient（无需 API Key，离线跑状态机）\n"
-              << "  --stdin        控制台逐题输入回答（仍为 Mock 实时握手，不发 ASR 脚本）\n"
-              << "  -h, --help     显示本说明\n\n"
-              << "示例:\n"
-              << "  " << prog << "\n"
-              << "  " << prog << " --mock-llm ./doc/resume.pdf\n"
-              << "  " << prog << " --stdin --mock-llm\n";
+    std::cerr
+        << "Usage:\n"
+        << "  " << prog << " [options] [resume.pdf]\n\n"
+        << "Default flow:\n"
+        << "  Load config/local_config.json, fallback to config/default_config.json\n"
+        << "  -> parse PDF -> RealLLMClient/MockLLMClient -> MockRealtimeClient\n"
+        << "  -> DialogSession::RunEventDriven()\n\n"
+        << "Options:\n"
+        << "  --mock-llm            Use MockLLMClient for offline state-machine test\n"
+        << "  --stdin               Answer questions from stdin with mock realtime handshake\n"
+        << "  --real-wss-smoke      Only test real WSS Connect -> ChatTextQuery -> TTS\n"
+        << "  --text <text>         Text sent by --real-wss-smoke\n"
+        << "  --wait-seconds <n>    TTS wait timeout for --real-wss-smoke\n"
+        << "  -h, --help            Show this help\n\n"
+        << "Examples:\n"
+        << "  " << prog << "\n"
+        << "  " << prog << " --mock-llm ./doc/resume.pdf\n"
+        << "  " << prog << " --stdin --mock-llm\n"
+        << "  " << prog << " --real-wss-smoke --text \"hello\" --wait-seconds 30\n";
 }
 
-// 与 InterviewSession::Start 中出题数量一致；每题 EvaluateAnswer 可能产生一轮追问，
-// HandleAsrFinalized 每轮追问也消耗一整段 ASR，故脚本轮数至少为 question_count * 2。
 constexpr int kPipelineQuestionCount = 3;
 
-std::vector<common::ParsedResponse> BuildEventDrivenScript(const std::string& session_id) {
+std::vector<common::ParsedResponse> BuildEventDrivenScript(
+    const std::string& session_id) {
     std::vector<common::ParsedResponse> script;
     script.push_back(MakeEvent(common::events::kConnectionStarted));
     script.back().connect_id = "mock-connect-pipeline";
     script.push_back(MakeEvent(common::events::kSessionStarted, session_id));
 
     const char* asr_answers[] = {
-            // Q1 主答 / 追问
-            "我熟悉智能指针与 RAII，能说明资源与生命周期管理。",
-            "我了解常用 STL 容器及迭代器失效场景。",
-            // Q2 主答 / 追问
-            "我用 epoll 写过简单高并发服务骨架。",
-            "主从 Reactor 里用队列把连接派给工作线程，并用互斥或无锁队列做任务分发。",
-            // Q3 主答 / 追问（追问不一定会发生，多出的脚本轮次不会被消费）
-            "muduo 里用 Channel 绑 fd，Poller 返活跃通道后在 EventLoop 线程里调回调。",
-            "析构里注销 channel、停掉 loop，并用 RAII 封装 MutexLockGuard。",
+        "I understand RAII and smart pointers.",
+        "I know common STL containers and iterator invalidation cases.",
+        "I have built a small epoll-based concurrent service.",
+        "I would dispatch accepted connections to workers with queues.",
+        "In muduo, Channel wraps fd events and EventLoop runs callbacks.",
+        "I would unregister channels and stop loops during cleanup.",
     };
-    static_assert(sizeof(asr_answers) / sizeof(asr_answers[0]) >= kPipelineQuestionCount * 2,
-            "ASR 脚本长度需覆盖每题主答+追问的上界");
+    static_assert(sizeof(asr_answers) / sizeof(asr_answers[0]) >=
+                      kPipelineQuestionCount * 2,
+                  "ASR script must cover main answers and followups");
 
     const int n = kPipelineQuestionCount * 2;
     for (int i = 0; i < n; ++i) {
-        const char* t = asr_answers[i];
         script.push_back(MakeEvent(common::events::kAsrInfo, session_id));
-        script.push_back(MakeEvent(common::events::kAsrResult, session_id, t));
+        script.push_back(
+            MakeEvent(common::events::kAsrResult, session_id, asr_answers[i]));
         script.push_back(MakeEvent(common::events::kAsrEnded, session_id));
     }
     script.push_back(MakeEvent(common::events::kSessionFinished, session_id));
     return script;
 }
 
-std::vector<common::ParsedResponse> BuildStdinHandshakeScript(const std::string& session_id) {
+std::vector<common::ParsedResponse> BuildStdinHandshakeScript(
+    const std::string& session_id) {
     std::vector<common::ParsedResponse> script;
     script.push_back(MakeEvent(common::events::kConnectionStarted));
     script.back().connect_id = "mock-connect-stdin";
@@ -115,12 +133,160 @@ std::vector<common::ParsedResponse> BuildStdinHandshakeScript(const std::string&
     return script;
 }
 
+common::AppConfig LoadConfigWithFallback() {
+    common::Config& config = common::Config::Instance();
+    if (config.LoadFromFile("config/local_config.json")) {
+        LOG_INFO("loaded config/local_config.json");
+        return config.Snapshot();
+    }
+    if (config.LoadFromFile("config/default_config.json")) {
+        LOG_WARN("config/local_config.json not found or invalid, using config/default_config.json");
+        return config.Snapshot();
+    }
+    throw std::runtime_error(
+        "failed to load config/local_config.json or config/default_config.json");
+}
+
+bool LoadLocalConfig(common::AppConfig& out_config) {
+    common::Config& config = common::Config::Instance();
+    if (!config.LoadFromFile("config/local_config.json")) {
+        return false;
+    }
+    out_config = config.Snapshot();
+    LOG_INFO("loaded config/local_config.json");
+    return true;
+}
+
+bool WaitForSessionId(RealWssSmokeState& state, std::chrono::seconds timeout) {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    return state.cv.wait_for(lock, timeout, [&] {
+               return !state.session_id.empty() || state.failed;
+           }) &&
+           !state.session_id.empty() && !state.failed;
+}
+
+bool WaitForTtsEnded(RealWssSmokeState& state, std::chrono::seconds timeout) {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    return state.cv.wait_for(lock, timeout, [&] {
+               return state.tts_ended || state.failed;
+           }) &&
+           state.tts_ended && !state.failed;
+}
+
+int RunRealWssSmoke(const common::AppConfig& config,
+                    const std::string& text,
+                    int wait_seconds) {
+    RealWssSmokeState state;
+    services::RealRealtimeClient client(config.ws.base_url);
+
+    client.SetEventHandler([&state](const common::ParsedResponse& evt) {
+        if (evt.code != 0) {
+            LOG_ERROR("[smoke] server error code={} payload={}",
+                      evt.code, evt.payload_json);
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.failed = true;
+            }
+            state.cv.notify_all();
+            return;
+        }
+
+        switch (evt.event) {
+        case common::events::kConnectionStarted:
+            LOG_INFO("[smoke] kConnectionStarted connect_id={}", evt.connect_id);
+            break;
+
+        case common::events::kSessionStarted:
+            LOG_INFO("[smoke] kSessionStarted session_id={}", evt.session_id);
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.session_id = evt.session_id;
+            }
+            state.cv.notify_all();
+            break;
+
+        case common::events::kTtsResponse:
+            if (evt.is_binary) {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.tts_bytes += evt.payload_bytes.size();
+            }
+            LOG_INFO("[smoke] kTtsResponse bytes={}", evt.payload_bytes.size());
+            break;
+
+        case common::events::kTtsEnded:
+            LOG_INFO("[smoke] kTtsEnded");
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.tts_ended = true;
+            }
+            state.cv.notify_all();
+            break;
+
+        case common::events::kSessionFailed:
+        case common::events::kConnectionFailed:
+            LOG_ERROR("[smoke] failure event={} payload={}",
+                      evt.event, evt.payload_json);
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.failed = true;
+            }
+            state.cv.notify_all();
+            break;
+
+        default:
+            LOG_DEBUG("[smoke] event={} json={} binary_bytes={}",
+                      evt.event, evt.payload_json, evt.payload_bytes.size());
+            break;
+        }
+    });
+
+    if (!client.Connect()) {
+        LOG_ERROR("[smoke] Connect() failed");
+        return 3;
+    }
+
+    const auto timeout = std::chrono::seconds(wait_seconds);
+    if (!WaitForSessionId(state, timeout)) {
+        LOG_ERROR("[smoke] session id not received");
+        client.Close();
+        return 4;
+    }
+
+    std::string session_id;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        session_id = state.session_id;
+    }
+
+    const nlohmann::json payload = {{"content", text}};
+    if (!client.SendEvent(common::events::kChatTextQuery, session_id, payload)) {
+        LOG_ERROR("[smoke] SendEvent(kChatTextQuery) failed");
+        client.Close();
+        return 5;
+    }
+
+    if (!WaitForTtsEnded(state, timeout)) {
+        LOG_ERROR("[smoke] TTS did not finish within {} seconds", wait_seconds);
+        client.Close();
+        return 6;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        LOG_INFO("[smoke] success, received TTS bytes={}", state.tts_bytes);
+    }
+    client.Close();
+    return 0;
+}
 
 }  // namespace
 
 int main(int argc, char* argv[]) {
     bool use_mock_llm = false;
     bool use_stdin = false;
+    bool run_real_wss_smoke = false;
+    std::string smoke_text = "Hello, please briefly introduce this interview.";
+    int wait_seconds = 20;
     std::string pdf_path;
 
     for (int i = 1; i < argc; ++i) {
@@ -137,33 +303,57 @@ int main(int argc, char* argv[]) {
             use_stdin = true;
             continue;
         }
+        if (std::strcmp(arg, "--real-wss-smoke") == 0) {
+            run_real_wss_smoke = true;
+            continue;
+        }
+        if (std::strcmp(arg, "--text") == 0 && i + 1 < argc) {
+            smoke_text = argv[++i];
+            continue;
+        }
+        if (std::strcmp(arg, "--wait-seconds") == 0 && i + 1 < argc) {
+            wait_seconds = std::stoi(argv[++i]);
+            if (wait_seconds <= 0) {
+                wait_seconds = 20;
+            }
+            continue;
+        }
         if (arg[0] == '-') {
-            std::cerr << "未知选项: " << arg << "\n";
+            std::cerr << "unknown option: " << arg << "\n";
             PrintUsage(argv[0]);
             return 1;
         }
         if (pdf_path.empty()) {
             pdf_path = arg;
         } else {
-            std::cerr << "多余的参数: " << arg << "\n";
+            std::cerr << "extra argument: " << arg << "\n";
             PrintUsage(argv[0]);
             return 1;
         }
-    }
-
-    if (pdf_path.empty()) {
-        pdf_path = "doc/resume.pdf";
     }
 
     if (!common::Logger::Init()) {
         return 1;
     }
 
+    if (run_real_wss_smoke) {
+        common::AppConfig config;
+        if (!LoadLocalConfig(config)) {
+            LOG_ERROR("real WSS smoke requires config/local_config.json with real keys");
+            return 2;
+        }
+        return RunRealWssSmoke(config, smoke_text, wait_seconds);
+    }
+
+    if (pdf_path.empty()) {
+        pdf_path = "doc/resume.pdf";
+    }
+
     common::AppConfig config;
     try {
-        config = common::LoadConfig("config/local_config.json");
+        config = LoadConfigWithFallback();
     } catch (const std::exception& e) {
-        LOG_ERROR("load config failed : {}", e.what());
+        LOG_ERROR("load config failed: {}", e.what());
         return 1;
     }
 
@@ -171,53 +361,53 @@ int main(int argc, char* argv[]) {
     std::string resume_text;
     if (!pdf_path.empty() && parser.IsValidPDF(pdf_path)) {
         resume_text = parser.ExtractText(pdf_path);
-        LOG_INFO("PDF 解析完成 path=\"{}\" chars={}", pdf_path, resume_text.size());
+        LOG_INFO("PDF parsed path=\"{}\" chars={}", pdf_path, resume_text.size());
         if (!resume_text.empty()) {
-            LOG_INFO("简历预览（截断）: {}", ResumePreviewForLog(resume_text, 260));
+            LOG_INFO("resume preview: {}", ResumePreviewForLog(resume_text, 260));
         } else {
-            LOG_WARN("PDF 路径有效但未解析出文本，后续出题可能无简历上下文");
+            LOG_WARN("PDF path is valid but no text was extracted");
         }
     } else {
-        LOG_WARN("未解析 PDF（无效路径或非 PDF）: {}", pdf_path);
+        LOG_WARN("PDF not parsed, invalid path or non-PDF: {}", pdf_path);
     }
 
     std::unique_ptr<services::LLMClient> llm;
     if (use_mock_llm) {
-        LOG_INFO("LLM mode: MockLLMClient（固定题库；题干会标注已载入简历规模）");
+        LOG_INFO("LLM mode: MockLLMClient");
         llm = std::make_unique<services::MockLLMClient>();
     } else {
-        LOG_INFO("LLM mode: RealLLMClient ({})，出题将携带简历全文", config.llm.model);
+        LOG_INFO("LLM mode: RealLLMClient ({})", config.llm.model);
         llm = std::make_unique<services::RealLLMClient>(
-                config.llm.api_url, config.llm.api_key, config.llm.model,
-                config.llm.temperature, config.llm.max_tokens,
-                config.llm.timeout_seconds);
+            config.llm.api_url, config.llm.api_key, config.llm.model,
+            config.llm.temperature, config.llm.max_tokens,
+            config.llm.timeout_seconds);
     }
 
     auto interview_session = std::make_unique<session::InterviewSession>(
-            std::move(llm), std::move(resume_text));
+        std::move(llm), std::move(resume_text));
 
     const std::string k_sid =
-            use_stdin ? "stdin-mock-session" : "mock-session-pipeline";
+        use_stdin ? "stdin-mock-session" : "mock-session-pipeline";
 
     std::vector<common::ParsedResponse> script =
-            use_stdin ? BuildStdinHandshakeScript(k_sid)
-                      : BuildEventDrivenScript(k_sid);
+        use_stdin ? BuildStdinHandshakeScript(k_sid)
+                  : BuildEventDrivenScript(k_sid);
 
-    const auto interval =
-            use_stdin ? std::chrono::milliseconds(80)
-                      : std::chrono::milliseconds(200);
+    const auto interval = use_stdin ? std::chrono::milliseconds(80)
+                                    : std::chrono::milliseconds(200);
 
-    auto rt = std::make_unique<services::MockRealtimeClient>(std::move(script),
-                                                             interval);
+    auto rt =
+        std::make_unique<services::MockRealtimeClient>(std::move(script),
+                                                       interval);
 
     session::DialogSession dialog(std::move(interview_session), std::move(rt));
     dialog.Start();
 
     if (use_stdin) {
-        LOG_INFO("交互模式：请在控制台逐题作答（题目会通过 SpeakText → Mock 日志侧可见）");
+        LOG_INFO("stdin mode: answer questions in the console");
         dialog.Run();
     } else {
-        LOG_INFO("事件驱动模式：MockRealtimeClient 自动投递 ASR 脚本");
+        LOG_INFO("event-driven mode: MockRealtimeClient dispatches ASR script");
         dialog.RunEventDriven();
     }
 
