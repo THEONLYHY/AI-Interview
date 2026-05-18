@@ -65,12 +65,14 @@ set(SERVICES_SOURCES
     src/services/mock_realtime_client.cc
     src/services/real_realtime_client.cc
     src/services/pdf_parser.cc
+    src/services/audio_manager.cc
 )
 
 set(MAIN_SOURCES
     #main/test.cc
     # main/dialog_session_realtime_demo_main.cc
-    main/interview_text_pipeline_main.cc
+    #main/interview_text_pipeline_main.cc
+    main/interview_voice_cli_main.cc
 )
 
 add_executable(ai_interview
@@ -88,16 +90,28 @@ target_include_directories(ai_interview
 
 target_link_libraries(ai_interview 
     PRIVATE
-        nlohmann_json::nlohmann_json
-        spdlog::spdlog
-        Boost::system
-        Boost::thread
+        # OpenSSL
         OpenSSL::SSL
         OpenSSL::Crypto
-
-        CURL::libcurl
+        # Boost
+        Boost::system
+        Boost::thread
+        # JSON
+        nlohmann_json::nlohmann_json
+        # 压缩
         ZLIB::ZLIB
+        # 音频
+        portaudio_static
+        # HTTP客户端
+        CURL::libcurl
+        # PDF解析
         podofo::podofo
+        # 日志
+        spdlog::spdlog
+        # # Qt界面
+        # Qt${QT_VERSION_MAJOR}::Core
+        # Qt${QT_VERSION_MAJOR}::Widgets
+        # Qt${QT_VERSION_MAJOR}::Gui
 )
 
 # # 阶段 5：Mock 实时层脚本 + DialogSession 事件驱动（不依赖真 WSS）

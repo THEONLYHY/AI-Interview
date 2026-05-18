@@ -180,6 +180,8 @@ int RunRealWssSmoke(const common::AppConfig& config,
     RealWssSmokeState state;
     services::RealRealtimeClient client(config.ws.base_url);
 
+    LOG_INFO("[smoke] text smoke input_mod={} wait_seconds={} text_bytes={}",
+             config.dialog.input_mod, wait_seconds, text.size());
     if (config.dialog.input_mod == "audio") {
         LOG_WARN("[smoke] dialog.input_mod=audio; text smoke sends no PCM and "
                  "may hit DialogAudioIdleTimeoutError");
@@ -379,7 +381,7 @@ int main(int argc, char* argv[]) {
         pdf_path = "doc/resume.pdf";
     }
 
-    common::AppConfig config;
+    common::AppConfig config; 
     try {
         config = LoadConfigWithFallback();
     } catch (const std::exception& e) {
