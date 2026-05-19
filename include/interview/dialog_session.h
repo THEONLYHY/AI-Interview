@@ -85,7 +85,8 @@ private:
 
     // 主线程 Run/Stop 和实时接收线程的 OnServerEvent同时访问，用锁保护
     interview::common::DialogState state_ = interview::common::DialogState::kInit;
-    mutable std::mutex state_mutex_;    
+    mutable std::mutex state_mutex_;
+    std::mutex stop_mutex_;    
 
     // data_mutex_ 保护服务端事件携带的会话数据。
     // session_id_ 在 kSessionStarted 中写入，SpeakText/SendAudio 等发送路径读取；

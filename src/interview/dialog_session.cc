@@ -159,25 +159,25 @@ void DialogSession::RunEventDriven() {
         return;
     }
     LOG_INFO("event-driven loop started");
-    while (is_running_.load() && state_ != DialogState::kCompleted &&
+    while (is_running_.load() && State() != DialogState::kCompleted &&
            State() != DialogState::kStopped) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     LOG_INFO("event-driven loop ended, state = {}",
-             DialogStateToString(state_));
+             DialogStateToString(State()));
 }
 
 void DialogSession::Stop() {
-    if (!is_running_.exchange(false)) {
-        StopAudioThread();
-        return;
-    }
+    const bool was_running = is_running_.exchange(false);
+
     StopAudioThread();
     if (realtime_client_) {
         realtime_client_->Close();
     }
     SetState(DialogState::kStopped);
-    LOG_INFO("dialog session stopped");
+    if (was_running) {
+        LOG_INFO("dialog session stopped");
+    }
 }
 
 DialogState DialogSession::State() const {
@@ -243,9 +243,8 @@ void DialogSession::OnEnterSummary() {
     LOG_INFO("总分：{}", report.total_score);
     LOG_INFO("总结：{}", report.summary);
 
-    is_running_.store(false);
-    StopAudioThread();
     SetState(DialogState::kCompleted);
+    is_running_.store(false);
 }
 
 void DialogSession::SpeakText(const std::string& text) {
@@ -326,7 +325,21 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         is_running_.store(false);
         return;
     }
-
+    // kCompleted / kStopped 后会忽略普通后续事件，只允许 session/connection 结束类事件继续处理。
+    // 防止迟到的TTS事件会把状态回退。
+    const DialogState current_state = State();
+    const bool terminal_state = 
+                current_state == DialogState::kCompleted ||
+                current_state == DialogState::kStopped;
+    const bool terminal_event = 
+                evt.event == events::kSessionFinished ||
+                evt.event == events::kSessionFailed ||
+                evt.event == events::kConnectionFailed ||
+                evt.event == events::kConnectionFinished;
+    if (terminal_state && !terminal_event) {
+        LOG_DEBUG("[event] ignored after terminal state: id={}", evt.event);
+        return;
+    }
     switch (evt.event) {
     case events::kConnectionStarted:
         LOG_INFO("[event] kConnectionStarted connect_id={}", evt.connect_id);
@@ -464,9 +477,9 @@ void DialogSession::StartAudioThreads() {
 }
 
 void DialogSession::StopAudioThread() {
-    if (!audio_threads_running_.exchange(false)) {
-        return;
-    }
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+
+    const bool was_running = audio_threads_running_.exchange(false);
 
     tts_cv_.notify_all();
     if (audio_manager_) {
@@ -498,7 +511,9 @@ void DialogSession::StopAudioThread() {
     }
 
     audio_manager_.reset();
-    LOG_INFO("dialog audio threads stopped");
+    if (was_running) {
+        LOG_INFO("dialog audio threads stopped");
+    }
 }
 
 
