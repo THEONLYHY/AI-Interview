@@ -186,6 +186,46 @@ public:
 
         // PortAudio 初始化成功。
         initialized_ = true;
+
+        // 诊断:列举 PortAudio 实际看到的 host API 与设备。
+        //
+        // PortAudio 在 Linux 下能否找到默认输入设备,完全取决于
+        // 编译时启用了哪些 host API backend (ALSA / PulseAudio / JACK)。
+        // 如果二进制只链接了 Skeleton backend (vcpkg 在系统未装
+        // libasound2-dev / libpulse-dev 时的默认行为),
+        // Pa_GetDefaultInputDevice() 会永远返回 paNoDevice,
+        // 与是否真有麦克风无关。
+        //
+        // 因此这里在初始化成功后把拓扑打印出来,方便排查。
+        const int host_api_count = Pa_GetHostApiCount();
+        const int device_count = Pa_GetDeviceCount();
+        const PaDeviceIndex default_in = Pa_GetDefaultInputDevice();
+        const PaDeviceIndex default_out = Pa_GetDefaultOutputDevice();
+        LOG_INFO("PortAudio diag: host_api_count={}, device_count={}, "
+                 "default_input={}, default_output={}",
+                 host_api_count, device_count,
+                 static_cast<int>(default_in), static_cast<int>(default_out));
+        for (int i = 0; i < host_api_count; ++i) {
+            const PaHostApiInfo* api = Pa_GetHostApiInfo(i);
+            if (api != nullptr) {
+                LOG_INFO("PortAudio diag: host_api[{}] name='{}' type={} "
+                         "device_count={} default_in={} default_out={}",
+                         i, api->name, static_cast<int>(api->type),
+                         api->deviceCount,
+                         static_cast<int>(api->defaultInputDevice),
+                         static_cast<int>(api->defaultOutputDevice));
+            }
+        }
+        for (int i = 0; i < device_count; ++i) {
+            const PaDeviceInfo* dev = Pa_GetDeviceInfo(i);
+            if (dev != nullptr) {
+                LOG_INFO("PortAudio diag: device[{}] name='{}' host_api={} "
+                         "max_in_ch={} max_out_ch={} default_sr={}",
+                         i, dev->name, dev->hostApi,
+                         dev->maxInputChannels, dev->maxOutputChannels,
+                         dev->defaultSampleRate);
+            }
+        }
     }
 
     // 析构函数。

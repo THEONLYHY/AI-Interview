@@ -92,6 +92,11 @@ namespace events {
     constexpr uint32_t kSessionStarted       = 150;
     constexpr uint32_t kSessionFinished      = 152;
     constexpr uint32_t kSessionFailed        = 153;
+    // 每次大模型回复完成后，服务端下发的 token usage 计费统计
+    // payload: {"usage":{cached_audio_tokens, cached_text_tokens,
+    //                   input_audio_tokens, input_text_tokens,
+    //                   output_audio_tokens, output_text_tokens}}
+    constexpr uint32_t kUsage                = 154;
 
     // 业务级
     constexpr uint32_t kTaskRequest          = 200;  // 客户端送音频

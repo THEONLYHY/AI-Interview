@@ -21,6 +21,53 @@ using interview::common::Question;
 namespace events = interview::common::events;
 using interview::services::RealtimeClient;
 
+namespace {
+
+// 从 kAsrResult 的 payload_json 中提取真正的识别文本。
+//
+// 兼容两种来源:
+//   - Mock 路径: payload_json 直接就是裸 ASR 文本(无引号、无 {} ),
+//     原样返回即可。
+//   - Real 路径(豆包 SAMI 实时对话): payload_json 是已解 gzip 的 JSON
+//     字符串,真实文本可能在 "text" 或 "results[0].text" 字段。
+//
+// 任何解析异常都不传播,避免因为字段微调或心跳/空帧把 ASR 链路打断。
+// 返回值约定:
+//   - 非 JSON 起头(mock 走这里): 原样返回。
+//   - JSON 解析失败:           回退,把整段当裸文本返回。
+//   - JSON 解析成功但找不到字段:返回空串,上层据此跳过提交。
+std::string ExtractAsrText(const std::string& payload_json) {
+    if (payload_json.empty()) {
+        return {};
+    }
+    if (payload_json.front() != '{' && payload_json.front() != '[') {
+        return payload_json;
+    }
+    try {
+        const auto j = nlohmann::json::parse(payload_json);
+        if (j.is_object()) {
+            if (auto it = j.find("text");
+                it != j.end() && it->is_string()) {
+                return it->get<std::string>();
+            }
+            if (auto it = j.find("results");
+                it != j.end() && it->is_array() && !it->empty()) {
+                const auto& first = it->front();
+                if (first.is_object()) {
+                    if (auto t = first.find("text");
+                        t != first.end() && t->is_string()) {
+                        return t->get<std::string>();
+                    }
+                }
+            }
+        }
+        return {};
+    } catch (const nlohmann::json::exception&) {
+        return payload_json;
+    }
+}
+
+}  // namespace
 
 DialogSession::DialogSession(std::unique_ptr<InterviewSession> interview_session,
                              std::unique_ptr<RealtimeClient> realtime_client,
@@ -243,28 +290,25 @@ void DialogSession::HandleAsrFinalized() {
         return;
     }
 
-    LOG_INFO("候选人回答（ASR）：{}", current_asr_text_);
+    LOG_INFO("候选人回答（ASR）：{}", asr_text);
 
     if (interview_session_->HasPendingFollowup()) {
         EvaluateResult result =
-            interview_session_->SubmitFollowupAnswer(current_asr_text_);
+            interview_session_->SubmitFollowupAnswer(asr_text);
         LOG_INFO("追问评分：{}，反馈：{}", result.score, result.feedback);
         interview_session_->MoveToNextQuestion();
     } else {
-        EvaluateResult result = interview_session_->SubmitAnswer(current_asr_text_);
+        EvaluateResult result = interview_session_->SubmitAnswer(asr_text);
         LOG_INFO("评分：{}，反馈：{}", result.score, result.feedback);
 
         if (result.need_followup) {
             SetState(DialogState::kInterviewerSpeaking);
             LOG_INFO("追问：{}", result.followup_question);
             SpeakText(result.followup_question);
-            current_asr_text_.clear();
             return;
         }
         interview_session_->MoveToNextQuestion();
     }
-
-    current_asr_text_.clear();
 
     if (!interview_session_->HasNextQuestion()) {
         OnEnterSummary();
@@ -326,9 +370,20 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
 
     case events::kAsrResult:
         {
+            // payload_json 有两种来源,需要兼容:
+            //   - Mock 路径(main/dialog_session_realtime_demo_main.cc 等):
+            //     直接把裸 ASR 文本写到 payload_json,例如 "我熟悉 C++"。
+            //   - Real 路径(豆包 SAMI 实时对话):
+            //     payload_json 是服务端解 gzip 后的整段 JSON,
+            //     真实文本在 "text" 或 "results[0].text" 字段里。
+            // 先按 JSON 解析提取 text,失败或字段缺失再回退到把整段当裸文本,
+            // 这样不动 RealtimeClient 公共接口也能同时兼容两条路径。
+            std::string asr_text = ExtractAsrText(evt.payload_json);
+            LOG_DEBUG("[event] kAsrResult text='{}', raw={}",
+                      asr_text, evt.payload_json);
             std::lock_guard<std::mutex> lock(data_mutex_);
             // 常见实现为“当前整句覆盖”；若为增量需改为 +=
-            current_asr_text_ = evt.payload_json;
+            current_asr_text_ = std::move(asr_text);
         }
         break;
 
@@ -362,6 +417,12 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
     case events::kChatEnded:
     case events::kTtsSentenceEnd:
         LOG_DEBUG("[event] passthrough id={}", evt.event);
+        break;
+
+    case events::kUsage:
+        // 服务端在每次大模型响应结束后下发 token 计费统计。
+        // 当前不做累计，只在 DEBUG 级别落盘，避免 default 分支误报 WARN。
+        LOG_DEBUG("[event] kUsage json={}", evt.payload_json);
         break;
 
     default:
@@ -503,8 +564,21 @@ void DialogSession::EnqueueTtsAudio(const std::vector<uint8_t>& pcm) {
 }
 
 bool DialogSession::CanSendCandidateAudio() const {
+    // 服务端 sami 协议在 session 启动后立刻 VAD 监听 client 音频流。
+    // 客户端必须在 kIdle 期间就开始发送 mic PCM,
+    // 否则 ~10 秒后服务端抛 DialogAudioIdleTimeoutError。
+    //
+    // 状态白名单与 doc/ai-interview-staged-roadmap_df117cdc.plan.md
+    // 中"录音线程"小节一致:
+    //   "会话进入 kIdle 或收到 events::kAsrInfo (说话起首字) 后开始录"
+    //
+    // kInterviewerSpeaking 期间不发,避免本机扬声器 → mic 的
+    // TTS 回音被回送到服务端污染 ASR。
+    const DialogState s = State();
+    const bool state_allows =
+        (s == DialogState::kIdle || s == DialogState::kCandidateSpeaking);
     return is_running_.load() &&
-                State() == DialogState::kCandidateSpeaking &&
+                state_allows &&
                 !SessionIdSnapshot().empty() &&
                 realtime_client_ != nullptr &&
                 realtime_client_->IsConnected();
