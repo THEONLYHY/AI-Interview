@@ -9,9 +9,8 @@
 namespace interview::services {
 
 // RealRealtimeClient：豆包 WSS 实现
-// - 阶段 5：仅 Pimpl 骨架，所有方法 no-op / 返回 false
-// - 阶段 7：在 .cc 里填 Boost.Beast + OpenSSL 真 WSS，本头文件不会再动
-//   （Pimpl 把所有重型第三方头藏在 .cc 里，外面 include 这个头零依赖）
+// Boost.Beast + OpenSSL 真 WSS
+// Pimpl 把所有重型第三方头藏在 .cc 里，外面 include 这个头零依赖）
 
 class RealRealtimeClient : public RealtimeClient {
 public:

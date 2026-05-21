@@ -100,11 +100,24 @@ void DialogSession::Start() {
             
         // 音频优先于Connect 启动。 RealRealtimeClient::Connect() 内部会发送
         // StartSession, 服务端可能很快返回首题 TTS；提前启动播放队列可避免首包丢失。
-        StartAudioThreads();
+        if (!StartAudioThreads()) {
+            LOG_ERROR("voice mode requires working audio input/output; "
+                      "realtime session not started");
+            EmitContent("error",
+                        "voice mode requires working audio input/output; "
+                        "realtime session not started",
+                        -1);
+            is_running_.store(false);
+            SetState(DialogState::kStopped);
+            return;
+        }
 
         const bool connected = realtime_client_->Connect();
         if (!connected) {
             LOG_WARN("realtime client connect failed, continue text-only path");
+            EmitContent("error",
+                        "realtime client connect failed, continue text-only path",
+                        -1);
             StopAudioThread();
             SetState(DialogState::kIdle);
         } else {
@@ -185,23 +198,88 @@ DialogState DialogSession::State() const {
     return state_;
 }
 
+void DialogSession::SetContentCallback(DialogContentCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    content_callback_ = std::move(callback);
+}
+
+void DialogSession::SetStateCallback(DialogStateCallback callback) {
+    DialogState current_state;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        current_state = state_;
+    }
+
+    DialogStateCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        state_callback_ = std::move(callback);
+        cb = state_callback_;
+    }
+
+    // 注册状态回调时立即回放当前状态，UI 初次订阅后可马上刷新状态栏。
+    if (cb) {
+        cb(current_state);
+    }
+}
+
 void DialogSession::SetState(DialogState new_state) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    DialogState old_state;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (state_ == new_state) {
+            return;
+        }
+        old_state = state_;
+        state_ = new_state;
+    }
+
     LOG_DEBUG("dialog state changed: {} -> {}",
-              DialogStateToString(state_),
+              DialogStateToString(old_state),
               DialogStateToString(new_state));
-    state_ = new_state;
+
+    DialogStateCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        cb = state_callback_;
+    }
+
+    // 回调可能进入 Qt queued connection 或测试断言，不能在 state_mutex_ 内调用。
+    if (cb) {
+        cb(new_state);
+    }
+}
+
+void DialogSession::EmitContent(const std::string& role,
+                                const std::string& text,
+                                int question_index) {
+    if (text.empty()) {
+        return;
+    }
+
+    DialogContentCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        cb = content_callback_;
+    }
+
+    // 回调可能由后台线程触发；业务层不关心 UI 线程切换。
+    if (cb) {
+        cb(role, text, question_index);
+    }
 }
 
 void DialogSession::OnInterviewStarted() {
     if (interview_session_ == nullptr) {
         LOG_WARN("interview session is nullptr");
+        EmitContent("error", "interview session is nullptr", -1);
         Stop();
         return;
     }
 
     SetState(DialogState::kInterviewerSpeaking);
     LOG_INFO("欢迎参加模拟面试");
+    EmitContent("system", "欢迎参加模拟面试", -1);
     SetState(DialogState::kIdle);
 }
 
@@ -209,28 +287,47 @@ void DialogSession::OnAskQuestion() {
     Question question = interview_session_->GetCurrentQuestion();
     SetState(DialogState::kInterviewerSpeaking);
     LOG_INFO("第{}题：{}", question.id, question.text);
+    EmitContent("question", question.text, question.id);
 }
 
 void DialogSession::OnCandidateAnswer(const std::string& answer) {
+    const Question question = interview_session_->GetCurrentQuestion();
+    EmitContent("candidate", answer, question.id);
+
     SetState(DialogState::kInterviewerThinking);
     EvaluateResult result = interview_session_->SubmitAnswer(answer);
 
     LOG_INFO("评分：{}", result.score);
     LOG_INFO("反馈：{}", result.feedback);
+    EmitContent("feedback",
+                "评分：" + std::to_string(result.score) +
+                    "\n反馈：" + result.feedback,
+                question.id);
 
     if (result.need_followup) {
         SetState(DialogState::kInterviewerSpeaking);
         LOG_INFO("追问：{}", result.followup_question);
+        EmitContent("followup", result.followup_question, question.id);
     }
 }
 
 void DialogSession::OnFollowupAnswer(const std::string& answer) {
+    const Question question = interview_session_->GetPendingFollowupQuestion();
+    const int question_id = question.parent_question_id >= 0
+                                ? question.parent_question_id
+                                : question.id;
+    EmitContent("candidate", answer, question_id);
+
     SetState(DialogState::kInterviewerThinking);
 
     EvaluateResult result = interview_session_->SubmitFollowupAnswer(answer);
 
     LOG_INFO("追问评分：{}", result.score);
     LOG_INFO("追问反馈：{}", result.feedback);
+    EmitContent("feedback",
+                "追问评分：" + std::to_string(result.score) +
+                    "\n追问反馈：" + result.feedback,
+                question_id);
 }
 
 void DialogSession::OnEnterSummary() {
@@ -242,6 +339,10 @@ void DialogSession::OnEnterSummary() {
     LOG_INFO("面试结束");
     LOG_INFO("总分：{}", report.total_score);
     LOG_INFO("总结：{}", report.summary);
+    EmitContent("summary",
+                "总分：" + std::to_string(report.total_score) +
+                    "\n总结：" + report.summary,
+                -1);
 
     SetState(DialogState::kCompleted);
     is_running_.store(false);
@@ -263,7 +364,7 @@ void DialogSession::SpeakText(const std::string& text) {
         std::lock_guard<std::mutex> lock(data_mutex_);
         session_id = session_id_;
     }
-    if (!realtime_client_->SendEvent(events::kChatTextQuery, session_id_, payload)) {
+    if (!realtime_client_->SendEvent(events::kChatTextQuery, session_id, payload)) {
         LOG_WARN("SendEvent(kChatTextQuery) failed");
     }
 }
@@ -290,19 +391,32 @@ void DialogSession::HandleAsrFinalized() {
     }
 
     LOG_INFO("候选人回答（ASR）：{}", asr_text);
+    const int question_id = interview_session_->HasNextQuestion()
+                                ? interview_session_->GetCurrentQuestion().id
+                                : -1;
+    EmitContent("candidate", asr_text, question_id);
 
     if (interview_session_->HasPendingFollowup()) {
         EvaluateResult result =
             interview_session_->SubmitFollowupAnswer(asr_text);
         LOG_INFO("追问评分：{}，反馈：{}", result.score, result.feedback);
+        EmitContent("feedback",
+                    "追问评分：" + std::to_string(result.score) +
+                        "\n追问反馈：" + result.feedback,
+                    question_id);
         interview_session_->MoveToNextQuestion();
     } else {
         EvaluateResult result = interview_session_->SubmitAnswer(asr_text);
         LOG_INFO("评分：{}，反馈：{}", result.score, result.feedback);
+        EmitContent("feedback",
+                    "评分：" + std::to_string(result.score) +
+                        "\n反馈：" + result.feedback,
+                    question_id);
 
         if (result.need_followup) {
             SetState(DialogState::kInterviewerSpeaking);
             LOG_INFO("追问：{}", result.followup_question);
+            EmitContent("followup", result.followup_question, question_id);
             SpeakText(result.followup_question);
             return;
         }
@@ -314,6 +428,7 @@ void DialogSession::HandleAsrFinalized() {
     } else {
         Question q = interview_session_->GetCurrentQuestion();
         LOG_INFO("第{}题：{}", q.id, q.text);
+        EmitContent("question", q.text, q.id);
         SpeakText(q.text);
     }
 }
@@ -321,6 +436,10 @@ void DialogSession::HandleAsrFinalized() {
 void DialogSession::OnServerEvent(const ParsedResponse& evt) {
     if (evt.code != 0) {
         LOG_ERROR("server error frame: code={}, json={}", evt.code, evt.payload_json);
+        EmitContent("error",
+                    "server error frame: code=" + std::to_string(evt.code) +
+                        ", payload=" + evt.payload_json,
+                    -1);
         SetState(DialogState::kStopped);
         is_running_.store(false);
         return;
@@ -356,6 +475,7 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         if (interview_session_ && interview_session_->HasNextQuestion()) {
             Question q = interview_session_->GetCurrentQuestion();
             LOG_INFO("第{}题：{}", q.id, q.text);
+            EmitContent("question", q.text, q.id);
             SpeakText(q.text);
         }
         break;
@@ -365,10 +485,16 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         SetState(DialogState::kInterviewerSpeaking);
         if (evt.is_binary) {
             LOG_DEBUG("[event] TTS audio chunk bytes={}", evt.payload_bytes.size());
+            EnqueueTtsAudio(evt.payload_bytes);
         }
         break;
 
     case events::kTtsEnded:
+        {
+            std::lock_guard<std::mutex> lock(tts_mutex_);
+            tts_round_ended_ = true;
+        }
+        tts_cv_.notify_all();
         SetState(DialogState::kIdle);
         break;
 
@@ -412,12 +538,14 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
 
     case events::kSessionFailed:
         LOG_ERROR("[event] kSessionFailed payload={}", evt.payload_json);
+        EmitContent("error", "session failed: " + evt.payload_json, -1);
         SetState(DialogState::kStopped);
         is_running_.store(false);
         break;
 
     case events::kConnectionFailed:
         LOG_ERROR("[event] kConnectionFailed payload={}", evt.payload_json);
+        EmitContent("error", "connection failed: " + evt.payload_json, -1);
         SetState(DialogState::kStopped);
         is_running_.store(false);
         break;
@@ -450,12 +578,12 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
     }
 }
 
-void DialogSession::StartAudioThreads() {
+bool DialogSession::StartAudioThreads() {
     if (!audio_enabled_) {
-        return;
+        return true;
     }
     if (audio_threads_running_.load()) {
-        return;
+        return true;
     }
 
     audio_manager_ = std::make_unique<interview::services::AudioManager>();
@@ -467,13 +595,14 @@ void DialogSession::StartAudioThreads() {
         audio_manager_->StopInput();
         audio_manager_->StopOutput();
         audio_manager_.reset();
-        return;
+        return false;
     }
 
     audio_threads_running_.store(true);
     recording_thread_ = std::thread(&DialogSession::RecordingLoop, this);
     playback_thread_ = std::thread(&DialogSession::PlaybackLoop, this);
     LOG_INFO("dialog audio threads started");
+    return true;
 }
 
 void DialogSession::StopAudioThread() {

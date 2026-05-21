@@ -19,7 +19,8 @@ class InterviewSession {
 public:
     explicit InterviewSession(
         std::unique_ptr<interview::services::LLMClient> llm_client, 
-                        std::string resume_text = {});
+                        std::string resume_text = {},
+                        int question_count = 3);
 
     void Start();
 
@@ -56,6 +57,7 @@ private:
     interview::common::Question pending_followup_question_;
 
     std::string resume_text_;
+    int question_count_ = 3;
 };
 
 }  // namespace interview::session

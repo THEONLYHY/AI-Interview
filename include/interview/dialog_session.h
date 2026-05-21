@@ -2,6 +2,7 @@
 #define INTERVIEW_DIALOGSESSION_H
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <mutex>
@@ -24,6 +25,19 @@ namespace interview::session {
 // 4. OnServerEvent 接收 ParsedResponse（与 Protocol::ParseResponse 输出对齐）
 class DialogSession {
 public:
+    // 内容回调供 UI/测试订阅会话文本事件。
+    // role 用于区分 question/candidate/feedback/followup/summary/error 等展示样式；
+    // question_index 对应主问题编号，非题目相关内容使用 -1。
+    using DialogContentCallback =
+        std::function<void(const std::string& role,
+                           const std::string& text,
+                           int question_index)>;
+
+    // 状态回调供 UI/测试订阅 DialogState 变化。
+    // 回调可能在会话、网络或音频线程触发，调用方负责切回自己的线程。
+    using DialogStateCallback =
+        std::function<void(interview::common::DialogState state)>;
+
     explicit DialogSession(
         std::unique_ptr<InterviewSession> interview_session,
         std::unique_ptr<interview::services::RealtimeClient> realtime_client,
@@ -49,8 +63,14 @@ public:
 
     interview::common::DialogState State() const;
 
+    void SetContentCallback(DialogContentCallback callback);
+    void SetStateCallback(DialogStateCallback callback);
+
 private:
     void SetState(interview::common::DialogState new_state);
+    void EmitContent(const std::string& role,
+                     const std::string& text,
+                     int question_index);
 
     // 面试开始后的事件处理
     void OnInterviewStarted();
@@ -70,7 +90,7 @@ private:
     void HandleAsrFinalized();
 
     // 音频线程入口。负责线程调度和队列同步
-    void StartAudioThreads();
+    bool StartAudioThreads();
     void StopAudioThread();
     void RecordingLoop();
     void PlaybackLoop();
@@ -87,6 +107,11 @@ private:
     interview::common::DialogState state_ = interview::common::DialogState::kInit;
     mutable std::mutex state_mutex_;
     std::mutex stop_mutex_;    
+
+    // 回调由 UI/测试注册，由会话/网络/audio 线程触发；复制后再调用，避免持锁执行外部代码。
+    mutable std::mutex callback_mutex_;
+    DialogContentCallback content_callback_;
+    DialogStateCallback state_callback_;
 
     // data_mutex_ 保护服务端事件携带的会话数据。
     // session_id_ 在 kSessionStarted 中写入，SpeakText/SendAudio 等发送路径读取；

@@ -303,6 +303,10 @@ class BuildSystem:
         build_type = self.args.config
         cmake_cmd.append(f'-DCMAKE_BUILD_TYPE={build_type}')
 
+        system_portaudio = 'ON' if self.args.system_portaudio else 'OFF'
+        cmake_cmd.append(
+            f'-DAI_INTERVIEW_USE_SYSTEM_PORTAUDIO={system_portaudio}')
+
         # Windows 特定配置
         if self.platform == 'Windows':
             cmake_cmd.extend(['-A', 'x64'])
@@ -344,9 +348,9 @@ class BuildSystem:
     def get_executable_path(self):
         """获取可执行文件路径"""
         if self.platform == 'Windows':
-            return self.build_dir / self.args.config / 'CppInterviewSystem.exe'
+            return self.build_dir / self.args.config / 'ai_interview.exe'
         else:
-            return self.build_dir / 'CppInterviewSystem'
+            return self.build_dir / 'ai_interview'
 
     def run_executable(self):
         """运行可执行文件"""
@@ -415,6 +419,12 @@ def main():
         '--run',
         action='store_true',
         help='构建后运行程序'
+    )
+
+    parser.add_argument(
+        '--system-portaudio',
+        action='store_true',
+        help='Linux/WSL: use system PortAudio via pkg-config instead of vcpkg PortAudio'
     )
 
     parser.add_argument(

@@ -106,13 +106,13 @@ int main(int argc, char* argv[]) {
         auto realtime_client =
             std::make_unique<services::RealRealtimeClient>(config.ws.base_url);
 
-        // The third constructor argument enables Stage 8 voice mode without
-        // changing existing mock/text demos. DialogSession still owns all
-        // lifecycle synchronization, including Stop() joining audio threads.
         session::DialogSession dialog(std::move(interview_session),
                                       std::move(realtime_client),
                                       true);
         dialog.Start();
+        if (dialog.State() == common::DialogState::kStopped) {
+            return 1;
+        }
         dialog.RunEventDriven();
         dialog.Stop();
         return 0;

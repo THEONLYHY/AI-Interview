@@ -17,16 +17,30 @@ endif()
 
 
 option(AI_INTERVIEW_BUILD_TESTS "Build protocol unit tests with local third_party/googletest" ON)
+option(AI_INTERVIEW_USE_SYSTEM_PORTAUDIO
+    "Use the system PortAudio package instead of the vcpkg PortAudio target"
+    OFF)
 
 
 find_package(OpenSSL REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system thread)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
-find_package(portaudio CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(podofo CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+
+if(AI_INTERVIEW_USE_SYSTEM_PORTAUDIO)
+    find_package(PkgConfig REQUIRED)
+    set(PKG_CONFIG_USE_CMAKE_PREFIX_PATH OFF)
+    pkg_check_modules(SYSTEM_PORTAUDIO REQUIRED IMPORTED_TARGET portaudio-2.0)
+    set(AI_INTERVIEW_PORTAUDIO_TARGET PkgConfig::SYSTEM_PORTAUDIO)
+    message(STATUS "Using system PortAudio via pkg-config")
+else()
+    find_package(portaudio CONFIG REQUIRED)
+    set(AI_INTERVIEW_PORTAUDIO_TARGET portaudio_static)
+    message(STATUS "Using vcpkg PortAudio target")
+endif()
 
 # Qt依赖（必需，vcpkg的qtbase是Qt6）
 # find_package(Qt6 COMPONENTS Core Widgets Gui QUIET)
@@ -101,7 +115,7 @@ target_link_libraries(ai_interview
         # 压缩
         ZLIB::ZLIB
         # 音频
-        portaudio_static
+        ${AI_INTERVIEW_PORTAUDIO_TARGET}
         # HTTP客户端
         CURL::libcurl
         # PDF解析
@@ -144,6 +158,35 @@ if(MSVC)
 else()
     target_compile_options(ai_interview PRIVATE -Wall -Wextra -Wpedantic)
     #target_compile_options(dialog_session_realtime_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(AI_INTERVIEW_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(dialog_session_regression_test
+        tests/dialog_session_regression_test.cc
+        src/common/logger.cc
+        src/common/config.cc
+        src/common/protocol.cc
+        src/interview/dialog_session.cc
+        src/interview/interview_session.cc
+        src/services/mock_llm_client.cc
+        src/services/audio_manager.cc
+    )
+    target_include_directories(dialog_session_regression_test PRIVATE ${PROJECT_INCLUDE_DIR})
+    target_link_libraries(dialog_session_regression_test PRIVATE
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+        ZLIB::ZLIB
+        ${AI_INTERVIEW_PORTAUDIO_TARGET}
+    )
+    if(MSVC)
+        target_compile_options(dialog_session_regression_test PRIVATE /W4)
+    else()
+        target_compile_options(dialog_session_regression_test PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME dialog_session_regression_test
+             COMMAND dialog_session_regression_test)
 endif()
 
 # if(AI_INTERVIEW_BUILD_TESTS)

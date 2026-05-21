@@ -50,3 +50,7 @@ config/local_config.json
 
 # GoogleTest：本地 git clone，不纳入版本库（见 CMakeLists.txt 说明）
 third_party/googletest/
+
+scripts/*.pcm
+scripts/*.mp3
+.codex/

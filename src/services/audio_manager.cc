@@ -107,12 +107,12 @@ public:
         //
         // 如果本地配置意外修改了 channels、bit_size 或 format，
         // 这里不会完全相信配置，而是会：
-        // 1. 打印 warning 日志，提示配置不符合 Stage 8 协议；
+        // 1. 打印 warning 日志，提示配置不符合协议；
         // 2. 强制改回固定格式。
         //
         // 这样可以避免因为配置错误导致服务端协议、录音路径、播放路径不一致。
         if (!IsPcm16Mono(input_config_)) {
-            LOG_WARN("audio_input must be mono 16-bit pcm; forcing fixed Stage 8 format");
+            LOG_WARN("audio_input must be mono 16-bit pcm; forcing fixed format");
 
             // 输入音频强制使用单声道。
             input_config_.channels = kMonoChannels;
