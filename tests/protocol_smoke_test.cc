@@ -1,9 +1,9 @@
 #include <cstdint>
+#include <cassert>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include "common/protocol.h"
@@ -18,6 +18,23 @@ using interview::common::Protocol;
 using interview::common::ProtocolMessage;
 using interview::common::SerializationType;
 namespace events = interview::common::events;
+
+#define TEST(suite, name) void suite##_##name()
+#define EXPECT_EQ(lhs, rhs) assert((lhs) == (rhs))
+#define ASSERT_GE(lhs, rhs) assert((lhs) >= (rhs))
+#define ASSERT_FALSE(expr) assert(!(expr))
+#define EXPECT_FALSE(expr) assert(!(expr))
+#define EXPECT_TRUE(expr) assert((expr))
+#define EXPECT_THROW(statement, exception_type)               \
+    do {                                                      \
+        bool threw_expected = false;                          \
+        try {                                                 \
+            statement;                                        \
+        } catch (const exception_type&) {                     \
+            threw_expected = true;                            \
+        }                                                     \
+        assert(threw_expected);                               \
+    } while (false)
 
 void AppendSizedStringUtf8(std::vector<uint8_t>* buffer, const std::string& s) {
     Protocol::AppendUint32BigEndian(*buffer, static_cast<uint32_t>(s.size()));
@@ -144,6 +161,51 @@ TEST(ProtocolSmoke, BuildFullRequestStartsWithVersionOne) {
     EXPECT_EQ(Protocol::ExtractHeaderSize(bytes[0]), 1);
 }
 
+TEST(ProtocolSmoke, DialogueProtocolEventConstantsArePinned) {
+    EXPECT_EQ(events::kStartConnection, 1u);
+    EXPECT_EQ(events::kFinishConnection, 2u);
+    EXPECT_EQ(events::kConnectionStarted, 50u);
+    EXPECT_EQ(events::kStartSession, 100u);
+    EXPECT_EQ(events::kFinishSession, 102u);
+    EXPECT_EQ(events::kSessionStarted, 150u);
+    EXPECT_EQ(events::kSessionFinished, 152u);
+    EXPECT_EQ(events::kSessionFailed, 153u);
+    EXPECT_EQ(events::kTaskRequest, 200u);
+    EXPECT_EQ(events::kTtsSentenceStart, 350u);
+    EXPECT_EQ(events::kTtsSentenceEnd, 351u);
+    EXPECT_EQ(events::kTtsResponse, 352u);
+    EXPECT_EQ(events::kTtsEnded, 359u);
+    EXPECT_EQ(events::kAsrInfo, 450u);
+    EXPECT_EQ(events::kAsrResult, 451u);
+    EXPECT_EQ(events::kAsrEnded, 459u);
+    EXPECT_EQ(events::kChatTextQuery, 501u);
+    EXPECT_EQ(events::kChatResponse, 550u);
+    EXPECT_EQ(events::kChatQuestionInfo, 553u);
+    EXPECT_EQ(events::kChatEnded, 559u);
+}
+
+TEST(ProtocolSmoke, ChatTextQueryFullRequestEncodesEvent501) {
+    const nlohmann::json payload = {{"content", "hello"}};
+    const std::vector<uint8_t> bytes =
+            Protocol::BuildFullRequest(events::kChatTextQuery, "sid-501", payload);
+    ASSERT_GE(bytes.size(), 8u);
+    EXPECT_EQ(Protocol::ReadUint32BigEndian(bytes, 4), 501u);
+    const ParsedResponse parsed = Protocol::ParseResponse(bytes);
+    EXPECT_EQ(parsed.event, 501u);
+    EXPECT_EQ(parsed.session_id, "sid-501");
+    EXPECT_EQ(parsed.payload_json, payload.dump());
+}
+
+TEST(ProtocolSmoke, ReadAloudTextQueryPayloadWrapsTextAsReadAloudInstruction) {
+    const nlohmann::json payload =
+            Protocol::BuildReadAloudTextQueryPayload("请介绍一下 RAII");
+    const std::string content = payload["content"].get<std::string>();
+    EXPECT_TRUE(content.find("直接朗读下面文字") != std::string::npos);
+    EXPECT_TRUE(content.find("请介绍一下 RAII") != std::string::npos);
+    EXPECT_TRUE(content.find("不要回答") != std::string::npos);
+    EXPECT_FALSE(content == "请介绍一下 RAII");
+}
+
 // ParseResponse 在非连接级事件下总会读取 session_id 段；须与 BuildFullRequest 非空 session_id 对齐。
 TEST(ProtocolSmoke, BuildFullRequestParseResponseRoundTrip) {
     const nlohmann::json payload = {{"role", "unit"}, {"n", 3}};
@@ -172,6 +234,7 @@ TEST(ProtocolSmoke, ParseResponseSessionStartedWithJson) {
             MakeMinimalServerFullResponseWithSessionEvent(
                     events::kSessionStarted, sid, json);
     const ParsedResponse parsed = Protocol::ParseResponse(frame);
+    EXPECT_EQ(parsed.message_type, MessageType::kServerFullResponse);
     EXPECT_EQ(parsed.event, events::kSessionStarted);
     EXPECT_EQ(parsed.session_id, sid);
     EXPECT_EQ(parsed.payload_json, json);
@@ -196,6 +259,7 @@ TEST(ProtocolSmoke, ParseResponseServerAckBinaryPayload) {
     frame.insert(frame.end(), pcm.begin(), pcm.end());
 
     const ParsedResponse parsed = Protocol::ParseResponse(frame);
+    EXPECT_EQ(parsed.message_type, MessageType::kServerAck);
     EXPECT_EQ(parsed.event, events::kTtsResponse);
     EXPECT_EQ(parsed.session_id, "tts-sid");
     EXPECT_TRUE(parsed.is_binary);
@@ -203,3 +267,23 @@ TEST(ProtocolSmoke, ParseResponseServerAckBinaryPayload) {
 }
 
 }  // namespace
+
+int main() {
+    ProtocolSmoke_BuildByte0RoundTrip();
+    ProtocolSmoke_EncodeDecodeRoundTrip();
+    ProtocolSmoke_GzipRoundTrip();
+    ProtocolSmoke_DecodeTooShortThrows();
+    ProtocolSmoke_DecodePayloadSizeMismatchThrows();
+    ProtocolSmoke_DecodeUnsupportedHeaderSizeThrows();
+    ProtocolSmoke_Uint32BigEndianRoundTrip();
+    ProtocolSmoke_ReadUint32BigEndianTooSmallThrows();
+    ProtocolSmoke_BuildFullRequestStartsWithVersionOne();
+    ProtocolSmoke_DialogueProtocolEventConstantsArePinned();
+    ProtocolSmoke_ChatTextQueryFullRequestEncodesEvent501();
+    ProtocolSmoke_ReadAloudTextQueryPayloadWrapsTextAsReadAloudInstruction();
+    ProtocolSmoke_BuildFullRequestParseResponseRoundTrip();
+    ProtocolSmoke_BuildClientAudioRequestUsesAudioOnlyMessageType();
+    ProtocolSmoke_ParseResponseSessionStartedWithJson();
+    ProtocolSmoke_ParseResponseServerAckBinaryPayload();
+    return 0;
+}

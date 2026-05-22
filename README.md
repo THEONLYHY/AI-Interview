@@ -1,93 +1,102 @@
-# AI_Interview
+# AI Interview
 
+A C++17 interview practice application with three frontends over the same
+business layer:
 
+- `ai_interview_text_pipeline`: text pipeline, mock interview flow, and real
+  WebSocket smoke testing.
+- `ai_interview_voice_cli`: microphone/speaker CLI for real-time voice
+  sessions.
+- `ai_interview_qt`: Qt Widgets shell for selecting a resume and running a
+  mock interview session.
 
-## Getting started
+Voice validation uses the real PortAudio input/output path or the explicit real
+WebSocket smoke command.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Requirements
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- CMake 3.27+
+- C++17 compiler
+- vcpkg with dependencies from `vcpkg.json`
+- Qt 6 Widgets
+- PortAudio. On Linux/WSL, system PortAudio can be selected with
+  `-DAI_INTERVIEW_USE_SYSTEM_PORTAUDIO=ON`.
 
-## Add your files
+## Build
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+```bash
+cmake -S . -B build \
+  -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+  -DAI_INTERVIEW_BUILD_TESTS=ON \
+  -DAI_INTERVIEW_USE_SYSTEM_PORTAUDIO=ON \
+  -DCMAKE_BUILD_TYPE=Debug
 
+cmake --build build -j 4
 ```
-cd existing_repo
-git remote add origin http://git.cpptrain.top/Psyduck/ai_interview.git
-git branch -M main
-git push -uf origin main
+
+## Test
+
+```bash
+ctest --test-dir build --output-on-failure
 ```
 
-## Integrate with your tools
+The current test suite covers protocol framing, interview session question
+generation, dialog session state/TTS behavior, and PCM conversion helpers.
 
-- [ ] [Set up project integrations](http://git.cpptrain.top/Psyduck/ai_interview/-/settings/integrations)
+## Configuration
 
-## Collaborate with your team
+`config/default_config.json` is a placeholder example. Copy it to
+`config/local_config.json` and fill in real WebSocket and LLM credentials before
+running real service flows.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+Do not commit `config/local_config.json`.
 
-## Test and Deploy
+## Text Pipeline
 
-Use the built-in continuous integration in GitLab.
+Run a mock LLM flow with a resume PDF:
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+```bash
+./build/ai_interview_text_pipeline --mock-llm ./doc/resume.pdf
+```
 
-***
+Run the mock flow with resume text from standard input:
 
-# Editing this README
+```bash
+./build/ai_interview_text_pipeline --stdin --mock-llm
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+`--mock-llm` only replaces the LLM client. It is not a promise that every
+runtime dependency is offline unless the selected mode also uses mock realtime
+events.
 
-## Suggestions for a good README
+## Real WebSocket Smoke
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+The smoke path requires `config/local_config.json` with real service keys.
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+./build/ai_interview_voice_cli --real-wss-smoke --text "hello" --wait-seconds 30
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+The smoke command connects, starts a session, sends one text query, waits for a
+TTS response or terminal state, then closes the socket.
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## Voice CLI
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Run a real microphone/speaker session:
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```bash
+./build/ai_interview_voice_cli --mock-llm
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+Use `--mock-llm` to keep the voice transport real while replacing the text LLM
+with deterministic questions. Omit it to use the configured real LLM endpoint.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+## Qt UI
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```bash
+./build/ai_interview_qt
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+The Qt target currently provides a resume selection dialog, mock session start
+and stop controls, state display, and transcript updates through the existing
+`DialogSession` callbacks.

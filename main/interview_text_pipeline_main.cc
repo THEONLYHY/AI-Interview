@@ -80,7 +80,7 @@ void PrintUsage(const char* prog) {
         << "  -> parse PDF -> RealLLMClient/MockLLMClient -> MockRealtimeClient\n"
         << "  -> DialogSession::RunEventDriven()\n\n"
         << "Options:\n"
-        << "  --mock-llm            Use MockLLMClient for offline state-machine test\n"
+        << "  --mock-llm            Use MockLLMClient with the mock realtime script\n"
         << "  --stdin               Answer questions from stdin with mock realtime handshake\n"
         << "  --real-wss-smoke      Only test real WSS Connect -> ChatTextQuery -> TTS\n"
         << "  --text <text>         Text sent by --real-wss-smoke\n"
@@ -280,7 +280,8 @@ int RunRealWssSmoke(const common::AppConfig& config,
         session_id = state.session_id;
     }
 
-    const nlohmann::json payload = {{"content", text}};
+    const nlohmann::json payload =
+        common::Protocol::BuildReadAloudTextQueryPayload(text);
     if (!client.SendEvent(common::events::kChatTextQuery, session_id, payload)) {
         LOG_ERROR("[smoke] SendEvent(kChatTextQuery) failed");
         client.Close();

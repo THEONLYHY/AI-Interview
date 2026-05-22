@@ -106,7 +106,7 @@ struct TtsConfig {
 // - audio_input: 录音上传参数
 // - audio_output: 播放输出参数
 struct AudioConfig {
-    int chunk = 160; // 16kHz 单声道 16bit PCM 下， 160 点约等于10ms。
+    int chunk = 3200; // input default: 200 ms at 16 kHz mono PCM.
     int channels = 1;
     int sample_rate = 16000;
     int bit_size = 16;
@@ -122,8 +122,8 @@ struct AppConfig {
     DialogConfig dialog;
     AsrConfig asr;
     TtsConfig tts;
-    AudioConfig audio_input;
-    AudioConfig audio_output;
+    AudioConfig audio_input{};
+    AudioConfig audio_output{4800, 1, 24000, 16, "pcm"};
 };
 
 // Config 单例。

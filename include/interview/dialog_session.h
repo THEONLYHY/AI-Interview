@@ -72,14 +72,13 @@ private:
                      const std::string& text,
                      int question_index);
 
-    // 面试开始后的事件处理
-    void OnInterviewStarted();
     // 负责出题
     void OnAskQuestion();
     // 处理主问题回答
     void OnCandidateAnswer(const std::string& answer);
     void OnFollowupAnswer(const std::string& answer);
     void OnEnterSummary();
+    void RequestCurrentQuestionSpeech();
 
     void OnServerEvent(const interview::common::ParsedResponse& evt);
 
@@ -95,10 +94,10 @@ private:
     void RecordingLoop();
     void PlaybackLoop();
     void EnqueueTtsAudio(const std::vector<uint8_t>& pcm);
+    void MarkTtsPlaybackDrained();
     bool CanSendCandidateAudio() const;
     std::string SessionIdSnapshot() const;
 
-private:
     std::unique_ptr<InterviewSession> interview_session_;
     std::unique_ptr<interview::services::RealtimeClient> realtime_client_;
     std::unique_ptr<interview::services::AudioManager> audio_manager_;
@@ -134,8 +133,8 @@ private:
     // 到播放线程再转 float32，保证 OnServerEvent 尽快返回继续收包。
     mutable std::mutex tts_mutex_;
     std::condition_variable tts_cv_;
-    std::queue<std::vector<uint8_t>> tts_queue_;
-    bool tts_round_ended_ = false;
+    std::queue<std::vector<float>> tts_queue_;
+    std::vector<uint8_t> tts_decode_remainder_;
 
     std::string session_id_;
     std::string current_asr_text_;

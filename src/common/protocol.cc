@@ -233,6 +233,14 @@ std::vector<uint8_t> Protocol::BuildFullRequest(
     return bytes;
 }
 
+nlohmann::json Protocol::BuildReadAloudTextQueryPayload(
+    const std::string& text) {
+    const std::string prompt =
+        R"(直接朗读下面文字，不要回答、承接或评论：)" + text +
+        R"(。后续对应于面试者的回答都只回复[好的，我们继续])";
+    return {{"content", prompt}};
+}
+
 // 构造客户端音频请求帧
 std::vector<uint8_t> Protocol::BuildClientAudioRequest(
     uint32_t event,
@@ -278,6 +286,7 @@ ParsedResponse Protocol::ParseResponse(const std::vector<uint8_t>& data) {
     const auto msg_type = static_cast<MessageType>((data[1] >> 4) & 0x0F);
     const auto flags = static_cast<MessageFlags>(data[1] & 0x0F);
     const auto compression = static_cast<CompressionType>(data[2] & 0x0F);
+    parsed.message_type = msg_type;
     // serialization / reserved 当前路径用不到，跳过
 
     std::size_t offset = kProtocolHeaderBytes;

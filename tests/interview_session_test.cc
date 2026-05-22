@@ -1,7 +1,6 @@
+#include <cassert>
 #include <memory>
 #include <string>
-
-#include <gtest/gtest.h>
 
 #include "interview/interview_session.h"
 #include "services/mock_llm_client.h"
@@ -11,38 +10,47 @@ namespace {
 using interview::session::InterviewSession;
 using interview::services::MockLLMClient;
 
-TEST(MockLLMClient, GenerateQuestionsTruncatesWhenRequested) {
+void GenerateQuestionsTruncatesWhenRequested() {
     MockLLMClient llm;
     const auto qs =
             llm.GenerateQuestions("", "job", /*question_count=*/2);
-    ASSERT_EQ(qs.size(), 2u);
-    EXPECT_EQ(qs[0].id, 1);
-    EXPECT_EQ(qs[1].id, 2);
+    assert(qs.size() == 2u);
+    assert(qs[0].id == 1);
+    assert(qs[1].id == 2);
 }
 
-TEST(InterviewSessionMock, ShortAnswerTriggersFollowupFlow) {
+void MockQuestionsStayFixedWhenResumeLoaded() {
+    MockLLMClient llm;
+    const auto without_resume = llm.GenerateQuestions("", "job", 3);
+    const auto with_resume = llm.GenerateQuestions("resume text", "job", 3);
+    assert(!without_resume.empty());
+    assert(!with_resume.empty());
+    assert(with_resume[0].text == without_resume[0].text);
+}
+
+void ShortAnswerTriggersFollowupFlow() {
     auto llm = std::make_unique<MockLLMClient>();
     InterviewSession session(std::move(llm));
     session.Start();
 
-    ASSERT_TRUE(session.HasNextQuestion());
+    assert(session.HasNextQuestion());
 
     const auto result = session.SubmitAnswer("short");
-    ASSERT_TRUE(result.need_followup);
-    ASSERT_TRUE(session.HasPendingFollowup());
+    assert(result.need_followup);
+    assert(session.HasPendingFollowup());
 
     const auto follow_q = session.GetPendingFollowupQuestion();
-    EXPECT_TRUE(follow_q.is_followup);
+    assert(follow_q.is_followup);
 
     const auto fu = session.SubmitFollowupAnswer(
             "long enough follow-up answer text here.");
-    EXPECT_GE(fu.score, 0);
+    assert(fu.score >= 0);
 
     session.MoveToNextQuestion();
-    EXPECT_TRUE(session.HasNextQuestion());
+    assert(session.HasNextQuestion());
 }
 
-TEST(InterviewSessionMock, FullInterviewWithoutFollowupProducesReport) {
+void FullInterviewWithoutFollowupProducesReport() {
     auto llm = std::make_unique<MockLLMClient>();
     InterviewSession session(std::move(llm));
     session.Start();
@@ -52,18 +60,26 @@ TEST(InterviewSessionMock, FullInterviewWithoutFollowupProducesReport) {
             "complete without follow-up.";
     while (session.HasNextQuestion()) {
         const auto r = session.SubmitAnswer(long_answer);
-        EXPECT_FALSE(r.need_followup);
+        assert(!r.need_followup);
         session.MoveToNextQuestion();
     }
 
     const interview::common::InterviewReport report =
             session.GenerateReport();
 
-    ASSERT_EQ(report.records.size(), 3u);
-    EXPECT_EQ(report.total_score,
-              report.records[0].score + report.records[1].score +
-                      report.records[2].score);
-    EXPECT_FALSE(report.summary.empty());
+    assert(report.records.size() == 3u);
+    assert(report.total_score ==
+           report.records[0].score + report.records[1].score +
+               report.records[2].score);
+    assert(!report.summary.empty());
 }
 
 }  // namespace
+
+int main() {
+    GenerateQuestionsTruncatesWhenRequested();
+    MockQuestionsStayFixedWhenResumeLoaded();
+    ShortAnswerTriggersFollowupFlow();
+    FullInterviewWithoutFollowupProducesReport();
+    return 0;
+}

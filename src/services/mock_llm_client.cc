@@ -18,14 +18,10 @@ std::vector<Question> MockLLMClient::GenerateQuestions(
 
     (void)job_description;
 
-    std::string q1_text = "请介绍一下 RAII";
-    if (!resume_text.empty()) {
-        q1_text = "（上下文：已载入简历 " + std::to_string(resume_text.size()) +
-                  " 字；本题仍为离线固定模板）请介绍一下 RAII";
-    }
+    (void)resume_text;
 
     std::vector<Question> questions = {
-        {1, q1_text, false, -1},
+        {1, "请介绍一下 RAII", false, -1},
         {2, "请说一下智能指针的作用", false, -1},
         {3, "请解释 epoll 和 select 的区别", false, -1}
     };

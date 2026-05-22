@@ -1,9 +1,15 @@
 #include "interview/dialog_session.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "common/interview_types.h"
 #include "common/logger.h"
@@ -16,6 +22,7 @@ using interview::common::DialogState;
 using interview::common::DialogStateToString;
 using interview::common::EvaluateResult;
 using interview::common::InterviewReport;
+using interview::common::MessageType;
 using interview::common::ParsedResponse;
 using interview::common::Question;
 namespace events = interview::common::events;
@@ -67,6 +74,18 @@ std::string ExtractAsrText(const std::string& payload_json) {
     }
 }
 
+std::vector<uint8_t> Pcm16SamplesToLeBytes(
+    const std::vector<int16_t>& samples) {
+    std::vector<uint8_t> bytes;
+    bytes.reserve(samples.size() * sizeof(int16_t));
+    for (const int16_t sample : samples) {
+        const auto raw = static_cast<uint16_t>(sample);
+        bytes.push_back(static_cast<uint8_t>(raw & 0xFF));
+        bytes.push_back(static_cast<uint8_t>((raw >> 8) & 0xFF));
+    }
+    return bytes;
+}
+
 }  // namespace
 
 DialogSession::DialogSession(std::unique_ptr<InterviewSession> interview_session,
@@ -84,44 +103,55 @@ void DialogSession::Start() {
     if (is_running_.load()) {
         return;
     }
+    if (interview_session_ == nullptr) {
+        LOG_ERROR("interview session is nullptr");
+        EmitContent("error", "interview session is nullptr", -1);
+        SetState(DialogState::kStopped);
+        return;
+    }
+
     is_running_.store(true);
     SetState(DialogState::kConnecting);
+    interview_session_->Start();
 
-    if (interview_session_) {
-        interview_session_->Start();
-    }
-    
-    OnInterviewStarted();
+    LOG_INFO("欢迎参加模拟面试");
+    EmitContent("system", "欢迎参加模拟面试", -1);
 
     if (realtime_client_) {
-        // 回调必须先于 Connect，避免 Mock 线程瞬间投递丢失首包
+        // 回调必须先于 Connect，避免 Mock 线程瞬间投递丢失首包。
         realtime_client_->SetEventHandler(
             [this](const ParsedResponse& evt) { OnServerEvent(evt); });
-            
-        // 音频优先于Connect 启动。 RealRealtimeClient::Connect() 内部会发送
-        // StartSession, 服务端可能很快返回首题 TTS；提前启动播放队列可避免首包丢失。
-        if (!StartAudioThreads()) {
-            LOG_ERROR("voice mode requires working audio input/output; "
-                      "realtime session not started");
+
+        if (!realtime_client_->Connect()) {
+            LOG_ERROR("realtime client connect failed, stopping dialog session");
             EmitContent("error",
-                        "voice mode requires working audio input/output; "
-                        "realtime session not started",
+                        "realtime client connect failed, stopping dialog session",
                         -1);
+            StopAudioThread();
+            realtime_client_->Close();
             is_running_.store(false);
             SetState(DialogState::kStopped);
             return;
         }
+        LOG_INFO("realtime client connected");
 
-        const bool connected = realtime_client_->Connect();
-        if (!connected) {
-            LOG_WARN("realtime client connect failed, continue text-only path");
-            EmitContent("error",
-                        "realtime client connect failed, continue text-only path",
-                        -1);
-            StopAudioThread();
-            SetState(DialogState::kIdle);
-        } else {
-            LOG_INFO("realtime client connected");
+        if (audio_enabled_) {
+            SetState(DialogState::kInterviewerSpeaking);
+            if (!StartAudioThreads()) {
+                LOG_ERROR("voice mode requires working audio input/output; "
+                          "realtime session not started");
+                EmitContent("error",
+                            "voice mode requires working audio input/output; "
+                            "realtime session not started",
+                            -1);
+                realtime_client_->Close();
+                is_running_.store(false);
+                SetState(DialogState::kStopped);
+                return;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            RequestCurrentQuestionSpeech();
         }
     } else {
         SetState(DialogState::kIdle);
@@ -269,20 +299,6 @@ void DialogSession::EmitContent(const std::string& role,
     }
 }
 
-void DialogSession::OnInterviewStarted() {
-    if (interview_session_ == nullptr) {
-        LOG_WARN("interview session is nullptr");
-        EmitContent("error", "interview session is nullptr", -1);
-        Stop();
-        return;
-    }
-
-    SetState(DialogState::kInterviewerSpeaking);
-    LOG_INFO("欢迎参加模拟面试");
-    EmitContent("system", "欢迎参加模拟面试", -1);
-    SetState(DialogState::kIdle);
-}
-
 void DialogSession::OnAskQuestion() {
     Question question = interview_session_->GetCurrentQuestion();
     SetState(DialogState::kInterviewerSpeaking);
@@ -348,6 +364,19 @@ void DialogSession::OnEnterSummary() {
     is_running_.store(false);
 }
 
+void DialogSession::RequestCurrentQuestionSpeech() {
+    if (!interview_session_ || !interview_session_->HasNextQuestion()) {
+        return;
+    }
+
+    Question q = interview_session_->GetCurrentQuestion();
+    LOG_INFO("第{}题：{}", q.id, q.text);
+    EmitContent("question", q.text, q.id);
+    // 这里只是发送文本请求，让服务端开始生成/下发 TTS。
+    // 本地播放必须等后续 kTtsResponse(ServerAck/binary) 到达后才发生。
+    SpeakText(q.text);
+}
+
 void DialogSession::SpeakText(const std::string& text) {
     if (text.empty()) {
         return;
@@ -358,12 +387,15 @@ void DialogSession::SpeakText(const std::string& text) {
     }
     // 豆包 ChatTextQuery：具体字段以接入时官方文档为准。
     // 这里先拷贝 session_id_ 再发送，避免在网络 write 期间持有 data_mutex_。
-    const nlohmann::json payload = {{"content", text}};
+    const nlohmann::json payload =
+        interview::common::Protocol::BuildReadAloudTextQueryPayload(text);
     std::string session_id;
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
         session_id = session_id_;
     }
+    SetState(DialogState::kInterviewerSpeaking);
+    tts_cv_.notify_all();
     if (!realtime_client_->SendEvent(events::kChatTextQuery, session_id, payload)) {
         LOG_WARN("SendEvent(kChatTextQuery) failed");
     }
@@ -434,7 +466,9 @@ void DialogSession::HandleAsrFinalized() {
 }
 
 void DialogSession::OnServerEvent(const ParsedResponse& evt) {
-    if (evt.code != 0) {
+    const bool error_response =
+        evt.message_type == MessageType::kServerErrorResponse || evt.code != 0;
+    if (error_response) {
         LOG_ERROR("server error frame: code={}, json={}", evt.code, evt.payload_json);
         EmitContent("error",
                     "server error frame: code=" + std::to_string(evt.code) +
@@ -442,6 +476,7 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
                     -1);
         SetState(DialogState::kStopped);
         is_running_.store(false);
+        StopAudioThread();
         return;
     }
     // kCompleted / kStopped 后会忽略普通后续事件，只允许 session/connection 结束类事件继续处理。
@@ -472,33 +507,46 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         }
 
         SetState(DialogState::kIdle);
-        if (interview_session_ && interview_session_->HasNextQuestion()) {
-            Question q = interview_session_->GetCurrentQuestion();
-            LOG_INFO("第{}题：{}", q.id, q.text);
-            EmitContent("question", q.text, q.id);
-            SpeakText(q.text);
+        if (!audio_enabled_) {
+            RequestCurrentQuestionSpeech();
         }
         break;
 
     case events::kTtsSentenceStart:
-    case events::kTtsResponse:
+        LOG_INFO("[event] kTtsSentenceStart");
         SetState(DialogState::kInterviewerSpeaking);
-        if (evt.is_binary) {
-            LOG_DEBUG("[event] TTS audio chunk bytes={}", evt.payload_bytes.size());
-            EnqueueTtsAudio(evt.payload_bytes);
+        break;
+
+    case events::kTtsResponse:
+        if (evt.message_type != MessageType::kServerAck || !evt.is_binary) {
+            LOG_WARN("[event] ignored non-binary TTS response: message_type={}, json={}",
+                     static_cast<int>(evt.message_type), evt.payload_json);
+            break;
         }
+        SetState(DialogState::kInterviewerSpeaking);
+        LOG_DEBUG("[event] TTS audio chunk bytes={}", evt.payload_bytes.size());
+        EnqueueTtsAudio(evt.payload_bytes);
         break;
 
     case events::kTtsEnded:
+        LOG_INFO("[event] kTtsEnded");
         {
             std::lock_guard<std::mutex> lock(tts_mutex_);
-            tts_round_ended_ = true;
+            if (!tts_decode_remainder_.empty()) {
+                LOG_WARN("discarding incomplete TTS float32 tail bytes={}",
+                         tts_decode_remainder_.size());
+                tts_decode_remainder_.clear();
+            }
         }
         tts_cv_.notify_all();
-        SetState(DialogState::kIdle);
+        MarkTtsPlaybackDrained();
         break;
 
     case events::kAsrInfo:
+        if (State() == DialogState::kInterviewerSpeaking) {
+            LOG_DEBUG("[event] ignored ASR start during TTS playback");
+            break;
+        }
         SetState(DialogState::kCandidateSpeaking);
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
@@ -527,6 +575,10 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         break;
 
     case events::kAsrEnded:
+        if (State() == DialogState::kInterviewerSpeaking) {
+            LOG_DEBUG("[event] ignored ASR end during TTS playback");
+            break;
+        }
         HandleAsrFinalized();
         break;
 
@@ -534,6 +586,7 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         LOG_INFO("[event] kSessionFinished");
         SetState(DialogState::kCompleted);
         is_running_.store(false);
+        StopAudioThread();
         break;
 
     case events::kSessionFailed:
@@ -541,6 +594,7 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         EmitContent("error", "session failed: " + evt.payload_json, -1);
         SetState(DialogState::kStopped);
         is_running_.store(false);
+        StopAudioThread();
         break;
 
     case events::kConnectionFailed:
@@ -548,6 +602,7 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         EmitContent("error", "connection failed: " + evt.payload_json, -1);
         SetState(DialogState::kStopped);
         is_running_.store(false);
+        StopAudioThread();
         break;
 
     case events::kConnectionFinished:
@@ -555,6 +610,7 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
         break;
 
     case events::kChatResponse:
+    case events::kChatQuestionInfo:
     case events::kChatEnded:
     case events::kTtsSentenceEnd:
         LOG_DEBUG("[event] passthrough id={}", evt.event);
@@ -588,12 +644,13 @@ bool DialogSession::StartAudioThreads() {
 
     audio_manager_ = std::make_unique<interview::services::AudioManager>();
 
-    // 输入和输出任一端打不开都不能满足 “端到端语音”语义。
-    // 这里降级为无音频并保留实时文本/TTS 事件链路，避免因为设备确实把整个会话对象留在半启动状态。
-    if (!audio_manager_->StartInput() || !audio_manager_->StartOutput()) {
-        LOG_ERROR("audio device startup failed; voice I/O disabled");
-        audio_manager_->StopInput();
-        audio_manager_->StopOutput();
+    try {
+        audio_manager_->OpenInputStream();
+        audio_manager_->OpenOutputStream();
+    } catch (const std::exception& e) {
+        LOG_ERROR("audio device startup failed; voice I/O disabled: {}",
+                  e.what());
+        audio_manager_->Cleanup();
         audio_manager_.reset();
         return false;
     }
@@ -617,26 +674,18 @@ void DialogSession::StopAudioThread() {
     }
 
     if (recording_thread_.joinable()) {
-        if (recording_thread_.get_id() == std::this_thread::get_id()) {
-            recording_thread_.detach();
-        } else {
-            recording_thread_.join();
-        }
+        recording_thread_.join();
     }
 
     if (playback_thread_.joinable()) {
-        if (playback_thread_.get_id() == std::this_thread::get_id()) {
-            playback_thread_.detach();
-        } else {
-            playback_thread_.join();
-        }
+        playback_thread_.join();
     }
 
     {
         std::lock_guard<std::mutex> lock(tts_mutex_);
-        std::queue<std::vector<uint8_t>> empty;
+        std::queue<std::vector<float>> empty;
         std::swap(tts_queue_, empty);
-        tts_round_ended_ = false;
+        tts_decode_remainder_.clear();
     }
 
     audio_manager_.reset();
@@ -647,21 +696,51 @@ void DialogSession::StopAudioThread() {
 
 
 void DialogSession::RecordingLoop() {
+    const bool audio_debug = std::getenv("AI_INTERVIEW_AUDIO_DEBUG") != nullptr;
+    auto next_audio_debug_log = std::chrono::steady_clock::now();
+
     while (audio_threads_running_.load() && is_running_.load()) {
-        if (!CanSendCandidateAudio()) {
+        if (!audio_manager_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
-        std::vector<uint8_t> pcm;
-        if (!audio_manager_ || !audio_manager_->ReadInputChunk(pcm)) {
+        const std::vector<int16_t> samples = audio_manager_->ReadAudio();
+        if (samples.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
+        }
+        std::vector<uint8_t> pcm = Pcm16SamplesToLeBytes(samples);
+
+        const bool candidate_audio_allowed = CanSendCandidateAudio();
+        const auto input_level =
+            interview::services::AudioManager::Pcm16LeLevel(pcm);
+
+        if (!candidate_audio_allowed) {
+            std::fill(pcm.begin(), pcm.end(), 0);
         }
 
         const std::string session_id = SessionIdSnapshot();
         if (session_id.empty() || !realtime_client_ ||
-            !realtime_client_->SendAudio(session_id, pcm)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            !realtime_client_->IsConnected()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+
+        if (!realtime_client_->SendAudio(session_id, pcm)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        if (audio_debug) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_audio_debug_log) {
+                LOG_INFO("[audio-debug] mic mode={} peak={} rms={:.1f} bytes={} state={}",
+                         candidate_audio_allowed ? "real" : "silence",
+                         input_level.peak,
+                         input_level.rms,
+                         pcm.size(),
+                         DialogStateToString(State()));
+                next_audio_debug_log = now + std::chrono::seconds(1);
+            }
         }
     }
     LOG_DEBUG("recording loop exited");
@@ -669,42 +748,83 @@ void DialogSession::RecordingLoop() {
 
 void DialogSession::PlaybackLoop() {
     while (audio_threads_running_.load()) {
-        std::vector<uint8_t> pcm;
+        std::vector<float> samples;
         {
             std::unique_lock<std::mutex> lock(tts_mutex_);
             tts_cv_.wait(lock, [this] {
-                return !audio_threads_running_.load() || !tts_queue_.empty() ||
-                        tts_round_ended_;
+                return !audio_threads_running_.load() || !tts_queue_.empty();
             });
 
             if (!audio_threads_running_.load()) {
                 break;
             }
-            if (tts_queue_.empty()) {
-                tts_round_ended_ = false;
-                continue;
+            if (!tts_queue_.empty()) {
+                samples = std::move(tts_queue_.front());
+                tts_queue_.pop();
             }
-            
-            pcm = std::move(tts_queue_.front());
-            tts_queue_.pop();
         }
-        if (audio_manager_ && !audio_manager_->PlayTtsPcm(pcm)) {
+
+        if (samples.empty()) {
+            continue;
+        }
+        if (!audio_manager_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        try {
+            audio_manager_->WriteAudio(samples);
+        } catch (const std::exception& e) {
+            LOG_WARN("write output stream failed: {}", e.what());
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
-    LOG_DEBUG("playback loop excited");
+    LOG_DEBUG("playback loop exited");
+}
+
+void DialogSession::MarkTtsPlaybackDrained() {
+    const DialogState state = State();
+    if (state == DialogState::kCompleted || state == DialogState::kStopped) {
+        return;
+    }
+    if (state == DialogState::kInterviewerSpeaking) {
+        SetState(DialogState::kIdle);
+        LOG_INFO("TTS playback drained; candidate microphone audio enabled");
+    }
 }
 
 void DialogSession::EnqueueTtsAudio(const std::vector<uint8_t>& pcm) {
     if (!audio_threads_running_.load() || pcm.empty()) {
         return;
     }
+
+    bool queued = false;
     {
         std::lock_guard<std::mutex> lock(tts_mutex_);
-        tts_queue_.push(pcm);
-        tts_round_ended_ = false;
+        tts_decode_remainder_.insert(tts_decode_remainder_.end(),
+                                     pcm.begin(), pcm.end());
+
+        const std::size_t complete_bytes =
+            (tts_decode_remainder_.size() / sizeof(float)) * sizeof(float);
+        if (complete_bytes > 0) {
+            const std::vector<uint8_t> complete(
+                tts_decode_remainder_.begin(),
+                tts_decode_remainder_.begin() + complete_bytes);
+            std::vector<float> samples =
+                interview::services::AudioManager::Float32PcmLeToSamples(complete);
+            tts_decode_remainder_.erase(
+                tts_decode_remainder_.begin(),
+                tts_decode_remainder_.begin() + complete_bytes);
+
+            if (!samples.empty()) {
+                tts_queue_.push(std::move(samples));
+                queued = true;
+            }
+        }
     }
-    tts_cv_.notify_one();
+
+    if (queued) {
+        tts_cv_.notify_one();
+    }
 }
 
 bool DialogSession::CanSendCandidateAudio() const {

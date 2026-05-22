@@ -13,6 +13,22 @@
 namespace interview::common {
 namespace {
 
+constexpr const char* kRealtimeReadAloudGuard =
+    "\n\nRealtime voice policy:\n"
+    "- Do not answer technical questions or explain concepts.\n"
+    "- When the client sends a text query, read the exact text only.\n"
+    "- Do not add explanations, examples, prefixes, suffixes, or summaries.\n"
+    "- If candidate speech is recognized, give at most a short acknowledgement "
+    "and wait for the client to send the next prompt.";
+
+std::string WithRealtimeReadAloudGuard(const std::string& system_role) {
+    constexpr const char* kMarker = "Realtime voice policy:";
+    if (system_role.find(kMarker) != std::string::npos) {
+        return system_role;
+    }
+    return system_role + kRealtimeReadAloudGuard;
+}
+
 void LoadWsConfig(const nlohmann::json& root, AppConfig& config) {
     // 如果配置文件中没有 "ws" 字段，说明用户没有配置WebSocket
     // 这里直接返回，保留AppConfig 中已有的默认值
@@ -254,6 +270,16 @@ void LoadAudioSection(const nlohmann::json& audio, AudioConfig& config) {
 }
 
 void LoadAudioConfig(const nlohmann::json& root, AppConfig& config) {
+    if (root.contains("audio") && root["audio"].is_object()) {
+        const nlohmann::json& audio = root["audio"];
+        if (audio.contains("input")) {
+            LoadAudioSection(audio["input"], config.audio_input);
+        }
+        if (audio.contains("output")) {
+            LoadAudioSection(audio["output"], config.audio_output);
+        }
+    }
+
     if (root.contains("audio_input")) {
         LoadAudioSection(root["audio_input"], config.audio_input);
     }
@@ -347,42 +373,43 @@ bool Config::LoadFromFile(const std::string& file_path) {
  *   需要把 dialog、asr、tts 相关配置发送给服务端。
  */
 nlohmann::json Config::BuildStartSessionPayload() const {
-    // 加锁读取 config， 保证线程安全
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // 返回一个 JSON 对象。
-    //
-    // 注意：
-    // 这里只包含 dialog、asr、tts。
-    // 不包含 ws、llm、audio_input、audio_output。
-    //
-    // 这些字段很是“启动会话请求”需要的服务端参数，
-    // 而 ws、llm、audio_input/audio_output 是客户端本地使用的配置。
     return {
         {"dialog",
          {
              {"bot_name", config_.dialog.bot_name},
-             {"system_role", config_.dialog.system_role},
+             {"system_role",
+              WithRealtimeReadAloudGuard(config_.dialog.system_role)},
              {"speaking_style", config_.dialog.speaking_style},
-             {"city", config_.dialog.city},
-             {"strict_audio", config_.dialog.strict_audio},
-             {"audit_response", config_.dialog.audit_response},
-             {"recv_timeout", config_.dialog.recv_timeout},
-             {"input_mod", config_.dialog.input_mod},
+             {"location", {{"city", config_.dialog.city}}},
+             {"extra",
+              {
+                  {"strict_audit", config_.dialog.strict_audio},
+                  {"audit_response", config_.dialog.audit_response},
+                  {"recv_timeout", config_.dialog.recv_timeout},
+                  {"input_mod", config_.dialog.input_mod},
+              }},
          }},
         {"asr",
          {
-             {"end_smooth_window_ms", config_.asr.end_smooth_window_ms},
-             {"vad_silence_duration", config_.asr.vad_silence_duration},
-             {"vad_speech_trigger_duration",
-              config_.asr.vad_speech_trigger_duration},
+             {"extra",
+              {
+                  {"end_smooth_window_ms", config_.asr.end_smooth_window_ms},
+                  {"vad_silence_duration", config_.asr.vad_silence_duration},
+                  {"vad_speech_trigger_duration",
+                   config_.asr.vad_speech_trigger_duration},
+              }},
          }},
         {"tts",
          {
              {"speaker", config_.tts.speaker},
-             {"channel", config_.tts.channel},
-             {"format", config_.tts.format},
-             {"sample_rate", config_.tts.sample_rate},
+             {"audio_config",
+              {
+                  {"channel", config_.tts.channel},
+                  {"format", config_.tts.format},
+                  {"sample_rate", config_.tts.sample_rate},
+              }},
          }},
     };
 }

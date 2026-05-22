@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -22,6 +23,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/system/system_error.hpp>
 #include <openssl/ssl.h>
 
 #include "common/config.h"
@@ -186,6 +188,21 @@ std::string HostHeader(const UrlParts& parts) {
     return parts.host + ":" + parts.port;
 }
 
+bool IsRetryableIoError(const beast::error_code& ec) {
+    return ec == asio::error::try_again ||
+           ec == asio::error::would_block;
+}
+
+bool IsTransportClosedError(const beast::error_code& ec) {
+    return ec == websocket::error::closed ||
+           ec == asio::error::operation_aborted ||
+           ec == asio::error::eof ||
+           ec == asio::error::bad_descriptor ||
+           ec == asio::error::connection_reset ||
+           ec == ssl::error::stream_truncated ||
+           ec == ssl::error::unspecified_system_error;
+}
+
 // StartSession 是会话级请求，V1 二进制协议要求帧体中必须有
 // [session_id_size 4B] + [session_id bytes]，然后才是
 // [payload_size 4B] + [payload bytes]。
@@ -267,10 +284,16 @@ public:
     bool Connect() {
         // 如果已经处于 connected 状态，就不重复连接。
         if (connected_.load()) {
-            return true;
+            return false;
         }
 
         try {
+            if (!JoinReceiveThread()) {
+                throw std::runtime_error("Connect cannot run on receive thread");
+            }
+            ws_.reset();
+            ioc_.restart();
+
             closing_.store(false);
             failed_.store(false);
 
@@ -313,6 +336,7 @@ public:
             // 按值捕获 headers:
             ws_->set_option(websocket::stream_base::decorator(
                 [headers](websocket::request_type& req){
+                    req.set("User-Agent", "AI-Interview/1.0");
                     if (!headers.api_app_id.empty()) {
                         req.set("X-Api-App-ID", headers.api_app_id);
                     }
@@ -350,7 +374,7 @@ public:
             connected_.store(true);
             running_.store(true);
 
-            // 启动后天接收线程]
+            // 启动后天接收线程
             // 这个线程会持续 ws_->read(), 收到服务端事件后调用NotifyEvent
             recv_thread_ = std::thread(&Impl::ReceiveLoop, this);
             
@@ -392,84 +416,60 @@ public:
             LOG_INFO("[RealRealtimeClient] connected to {}{}", url_.host, url_.target);
             return true;
         } catch (std::exception& e) {
-            // 连接过程中任何一步失败，都记录日志并关闭资源。
+            // Startup failures are local transport failures, not a completed
+            // protocol session. Do not send FinishSession/FinishConnection here.
             LOG_ERROR("[RealRealtimeClient] Connect failed: {}", e.what());
-            
-            Close();
+            failed_.store(true);
+            FinishLocalClose();
             return false;
         }
     }
     /**
-     * 关闭连接。
+     * Closes the client.
      *
-     * 整体流程：
-     *   1. 防止重复关闭；
-     *   2. 如果 session 已建立，发送 FinishSession；
-     *   3. 等待 kSessionFinished，最多 3 秒；
-     *   4. 发送 FinishConnection；
-     *   5. 等待 kConnectionFinished，最多 3 秒；
-     *   6. 关闭 WebSocket；
-     *   7. 停止 io_context；
-     *   8. join 接收线程；
-     *   9. 释放 ws_；
-     *   10. 重置 io_context，方便后续重新 Connect。
+     * Normal owner-thread shutdown sends protocol FinishSession / FinishConnection
+     * best-effort, then performs local transport cleanup. Startup failures and
+     * receive-thread initiated shutdown skip protocol close because they cannot
+     * safely wait for acknowledgement frames.
      */
     void Close() {
         if (closing_.exchange(true)) {
-            JoinReceiveThread();
+            FinishLocalClose();
             return;
         }
 
+        const bool on_receive_thread = IsReceiveThread();
         const bool was_connected = connected_.load();
-        const bool can_send_protocol_close = was_connected && !failed_.load();
+        const bool can_send_protocol_close =
+            was_connected && !failed_.load() && !on_receive_thread;
+
         if (can_send_protocol_close) {
             std::string sid;
-            // 读取当前session_id
-            // session_id 会被接收线程更新，所以要加锁
             {
                 std::lock_guard<std::mutex> lock(event_mutex_);
                 sid = session_id_;
             }
 
-            // 如果已有 session_id, 说明 sessino很可能已经启动
-            // 先通知服务端结束 session
             if (!sid.empty()) {
-                // FinishSession / FinishConnection 是协议层优雅关闭。
-                // 等待最多 3 秒，不让服务端缺失确认导致本地 Stop 永久阻塞。
                 ForgetEvent(interview::common::events::kSessionFinished);
-                // 发送FinishSession
-                // Close阶段即使发送失败，也继续关闭，所以忽略返回值
                 (void)SendEvent(interview::common::events::kFinishSession, sid,
-                                    nlohmann::json::object());
-                // 等待服务端确认 session结束
-                // 最多等待3秒，超时也继续关闭
-                (void)WaitForEvent(
-                    interview::common::events::kSessionFinished, 
-                        kCloseEventTimeout);     
+                                nlohmann::json::object());
+                (void)WaitForEvent(interview::common::events::kSessionFinished,
+                                   kCloseEventTimeout);
             }
-            // 通知服务端结束整个 connection。
+
             ForgetEvent(interview::common::events::kConnectionFinished);
             (void)SendEvent(interview::common::events::kFinishConnection, "",
-                                nlohmann::json::object());
-            (void)WaitForEvent(
-                interview::common::events::kConnectionFinished,
-                    kCloseEventTimeout);
+                            nlohmann::json::object());
+            (void)WaitForEvent(interview::common::events::kConnectionFinished,
+                               kCloseEventTimeout);
+        } else if (on_receive_thread) {
+            // The receive thread cannot wait for protocol close acknowledgements
+            // that only the receive thread itself could read.
+            LOG_WARN("[RealRealtimeClient] Close called on receive thread; skipping protocol close");
         }
-        // 通知接收线程退出。
-        running_.store(false);
-        // 标记当前已经不再连接。
-        connected_.store(false);
-        
-        CloseTransport();
-        // 停止 io_context
-        ioc_.stop();
-        // 等待接收线程退出
-        JoinReceiveThread();
-        // 释放 WebSocekt对象
-        ws_.reset();
-        // 重置 io_context
-        // 如果后续还想重新 Connect, 需要restart
-        ioc_.restart();
+
+        FinishLocalClose();
         LOG_INFO("[RealRealtimeClient] closed");
     }
 
@@ -478,7 +478,7 @@ public:
         const std::string& session_id,
         const nlohmann::json& payload) {
         if (!connected_.load() || !ws_) {
-            LOG_WARN("[RealRealtimeClient] SendEvent(event = {}) not implemented yet (stage 7)",
+            LOG_WARN("[RealRealtimeClient] SendEvent(event = {}) on closed client",
                 event);
             return false;
         }
@@ -487,13 +487,16 @@ public:
             const std::vector<uint8_t> frame = 
                     interview::common::Protocol::BuildFullRequest(
                             event, session_id, payload);
-            // WebSocket 写操作加锁
-            std::lock_guard<std::mutex> lock(send_mutex_);
-            
-            ws_->binary(true);
-            ws_->write(asio::buffer(frame));
+            if (!WriteFrame(frame, "event")) {
+                return false;
+            }
 
-            LOG_DEBUG("[RealRealtimeClient] send event={}, session_id = {}", event, session_id);
+            if (event == interview::common::events::kChatTextQuery) {
+                LOG_INFO("[RealRealtimeClient] sent ChatTextQuery event={} session_id={} payload_bytes={}",
+                         event, session_id, payload.dump().size());
+            } else {
+                LOG_DEBUG("[RealRealtimeClient] send event={}, session_id = {}", event, session_id);
+            }
             return true;
         } catch (const std::exception& e) {
             LOG_ERROR("[RealRealtimeClient] SendEvent failed: {}", e.what());
@@ -524,12 +527,9 @@ public:
                 interview::common::Protocol::BuildClientAudioRequest(
                     interview::common::events::kTaskRequest, session_id, pcm);
 
-            // 和 SendEvent 共用 send_mutex_，
-            // 避免事件帧和音频帧并发写入 WebSocket。
-            std::lock_guard<std::mutex> lock(send_mutex_);
-
-            ws_->binary(true);
-            ws_->write(asio::buffer(frame));
+            if (!WriteFrame(frame, "audio")) {
+                return false;
+            }
 
             LOG_DEBUG("[RealRealtimeClient] sent audio bytes={}", pcm.size());
             return true;
@@ -549,6 +549,41 @@ public:
     }   
     
 private:
+    bool WriteFrame(const std::vector<uint8_t>& frame, const char* kind) {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            beast::error_code ec;
+            ws_->binary(true);
+            ws_->write(asio::buffer(frame), ec);
+            if (!ec) {
+                return true;
+            }
+
+            if (IsRetryableIoError(ec) && attempt == 0) {
+                LOG_DEBUG("[RealRealtimeClient] {} write would block; retrying",
+                          kind);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+
+            if (IsTransportClosedError(ec)) {
+                LOG_WARN("[RealRealtimeClient] {} write on closed transport: {}",
+                         kind, ec.message());
+                running_.store(false);
+                connected_.store(false);
+            } else {
+                LOG_ERROR("[RealRealtimeClient] {} write failed: {}",
+                          kind, ec.message());
+                failed_.store(true);
+            }
+            event_cv_.notify_all();
+            return false;
+        }
+
+        return false;
+    }
+
     /**
      * 后台接收线程主循环。
      *
@@ -566,6 +601,15 @@ private:
                 // 阻塞读取一条 WebSocket消息。
                 // 没有消息时， 这里会阻塞
                 ws_->read(buffer);
+
+                if (!ws_->got_binary()) {
+                    const std::string text =
+                        beast::buffers_to_string(buffer.data());
+                    LOG_WARN("[RealRealtimeClient] ignored non-binary frame "
+                             "bytes={}",
+                             text.size());
+                    continue;
+                }
 
                 // 把Beast buffer 转成string
                 const std::string raw = beast::buffers_to_string(buffer.data());
@@ -585,6 +629,39 @@ private:
                 if (handler) {
                     handler(parsed);
                 }
+            } catch (const boost::system::system_error& e) {
+                const beast::error_code ec = e.code();
+                if (IsRetryableIoError(ec)) {
+                    LOG_DEBUG("[RealRealtimeClient] receive would block; retrying");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+
+                if (ec == websocket::error::closed &&
+                    (closing_.load() || !running_.load())) {
+                    LOG_INFO("[RealRealtimeClient] peer closed WebSocket");
+                } else if (ec == websocket::error::closed) {
+                    LOG_WARN("[RealRealtimeClient] peer closed WebSocket");
+                    NotifyConnectionFailure("peer closed WebSocket");
+                } else if (IsTransportClosedError(ec) &&
+                           (closing_.load() || !running_.load())) {
+                    LOG_DEBUG("[RealRealtimeClient] receive stopped: {}",
+                              ec.message());
+                } else if (IsTransportClosedError(ec)) {
+                    LOG_WARN("[RealRealtimeClient] transport closed by peer: {}",
+                             ec.message());
+                    NotifyConnectionFailure("transport closed by peer: " +
+                                            ec.message());
+                } else {
+                    LOG_ERROR("[RealRealtimeClient] receive loop failed: {}",
+                              e.what());
+                    failed_.store(true);
+                    NotifyConnectionFailure("receive loop failed: " +
+                                            std::string(e.what()));
+                }
+
+                event_cv_.notify_all();
+                break;
             } catch (const std::exception& e) {
                 // 如果 running_ 仍然为 true，说明不是主动关闭导致的异常。
                 if (running_.load()) {
@@ -593,6 +670,8 @@ private:
 
                     // 标记连接失败，唤醒等待中的 WaitForEvent。
                     failed_.store(true);
+                    NotifyConnectionFailure("receive loop failed: " +
+                                            std::string(e.what()));
                     event_cv_.notify_all();
                 }
 
@@ -600,6 +679,30 @@ private:
             }
         }
         running_.store(false);
+        connected_.store(false);
+        event_cv_.notify_all();
+    }
+
+    void NotifyConnectionFailure(const std::string& reason) {
+        if (closing_.load()) {
+            return;
+        }
+
+        interview::common::ParsedResponse evt;
+        evt.message_type = interview::common::MessageType::kServerFullResponse;
+        evt.event = interview::common::events::kConnectionFailed;
+        evt.payload_json = reason;
+
+        NotifyEvent(evt);
+
+        EventHandler handler;
+        {
+            std::lock_guard<std::mutex> lock(handler_mutex_);
+            handler = handler_;
+        }
+        if (handler) {
+            handler(evt);
+        }
     }
     /**
      * 记录收到的服务端事件，并唤醒等待线程。
@@ -662,6 +765,21 @@ private:
         seen_events_.erase(event);
     }
 
+    void FinishLocalClose() {
+        running_.store(false);
+        connected_.store(false);
+        event_cv_.notify_all();
+
+        CloseTransport();
+        ioc_.stop();
+
+        if (JoinReceiveThread()) {
+            ws_.reset();
+            ioc_.restart();
+        }
+    }
+
+
     void CloseTransport() {
         if (!ws_) {
             return;
@@ -674,7 +792,7 @@ private:
         std::lock_guard<std::mutex> lock(send_mutex_);
         beast::error_code ec;
 
-        beast::get_lowest_layer(*ws_).cancel();
+        beast::get_lowest_layer(*ws_).socket().cancel(ec);
         if (ec) {
             LOG_DEBUG("[RealRealtimeClient] transport cancel ignored: {}",
                       ec.message());
@@ -695,24 +813,27 @@ private:
                       ec.message());
         }
     }
+    bool IsReceiveThread() const {
+        return recv_thread_.joinable() &&
+               recv_thread_.get_id() == std::this_thread::get_id();
+    }
+
     /**
-     * 等待接收线程退出。
+     * Waits for the receive thread to finish.
      *
-     * 注意：
-     *   如果当前线程就是 recv_thread_，不能 join 自己。
-     *   join 自己会导致死锁或抛异常。
-     *
-     * 所以这里检测到自己 join 自己时，选择 detach。
+     * Returns false when called from the receive thread itself. In that case
+     * the owner thread must call Close() later to join and release ws_.
      */
-    void JoinReceiveThread() {
+    bool JoinReceiveThread() {
         if (!recv_thread_.joinable()) {
-            return;
+            return true;
         }
-        if (recv_thread_.get_id() == std::this_thread::get_id()) {
-            recv_thread_.detach();
-            return;
+        if (IsReceiveThread()) {
+            LOG_WARN("[RealRealtimeClient] receive thread join deferred");
+            return false;
         }
         recv_thread_.join();
+        return true;
     }
 
 private:

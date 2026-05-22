@@ -3,12 +3,27 @@
     "ws": {
         "base_url": "wss://openspeech.bytedance.com/api/v3/realtime/dialogue",
         "headers": {
-            "X-Api-App-ID": "你的飞书App ID",
-            "X-Api-Access-Key": "你的飞书Access Token",
+            "X-Api-App-ID": "YOUR_APP_ID",
+            "X-Api-Access-Key": "YOUR_ACCESS_KEY",
             "X-Api-Resource-Id": "volc.speech.dialog",
-            "X-Api-App-Key": "PlgvMymc7f3tQnJ6",
+            "X-Api-App-Key": "YOUR_APP_KEY",
             "X-Api-Connect-Id": ""
         }
+    },
+    "dialog": {
+        "bot_name": "AI Interviewer",
+        "system_role": "You are a strict but friendly technical interviewer. Your job is to ask and evaluate, not to teach. Never answer technical questions for the candidate. When the client sends a text prompt to be spoken, read that prompt exactly and do not add explanations, examples, prefixes, suffixes, or summaries.",
+        "speaking_style": "professional",
+        "city": "beijing",
+        "strict_audio": false,
+        "audit_response": "Sorry, I cannot answer that question.",
+        "recv_timeout": 5000,
+        "input_mod": "audio"
+    },
+    "asr": {
+        "end_smooth_window_ms": 2000,
+        "vad_silence_duration": 2500,
+        "vad_speech_trigger_duration": 400
     },
     "tts": {
         "speaker": "zh_male_yunzhou_jupiter_bigtts",
@@ -16,15 +31,23 @@
         "format": "pcm",
         "sample_rate": 24000
     },
-    "asr": {
-        "end_smooth_window_ms": 2000,
-        "vad_silence_duration": 2500,
-        "vad_speech_trigger_duration": 400
+    "audio_input": {
+        "chunk": 3200,
+        "channels": 1,
+        "sample_rate": 16000,
+        "bit_size": 16,
+        "format": "pcm"
     },
-
+    "audio_output": {
+        "chunk": 4800,
+        "channels": 1,
+        "sample_rate": 24000,
+        "bit_size": 16,
+        "format": "pcm"
+    },
     "llm": {
-        "api_url": "你的api_url",
-        "api_key": "你的api_key",
+        "api_url": "https://api.example.com/v1/chat/completions",
+        "api_key": "YOUR_LLM_API_KEY",
         "model": "qwen3-8b",
         "temperature": 0.3,
         "max_tokens": 32000,

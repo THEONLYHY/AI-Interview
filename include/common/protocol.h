@@ -100,7 +100,7 @@ namespace events {
 
     // 业务级
     constexpr uint32_t kTaskRequest          = 200;  // 客户端送音频
-    constexpr uint32_t kChatTextQuery        = 500;  // 让 TTS 朗读一段文字
+    constexpr uint32_t kChatTextQuery        = 501;  // 文本对话查询，会触发服务端回复与 TTS
 
     // 服务端 TTS 相关
     constexpr uint32_t kTtsSentenceStart     = 350;
@@ -115,6 +115,7 @@ namespace events {
 
     // 服务端 Chat 相关
     constexpr uint32_t kChatResponse         = 550;
+    constexpr uint32_t kChatQuestionInfo     = 553;
     constexpr uint32_t kChatEnded            = 559;
 }  // namespace events
 
@@ -146,6 +147,7 @@ struct ProtocolMessage {
 
 // ParsedResponse：服务端帧解析后的统一结构
 struct ParsedResponse {
+    MessageType message_type = MessageType::kServerFullResponse;
     uint32_t event = 0;                  // event ID（无 kMsgWithEvent flag 时为 0）
     std::string session_id;              // 会话级 / 业务级响应才有
     std::string connect_id;              // 连接级响应才有
@@ -190,6 +192,11 @@ public:
     static std::vector<uint8_t> BuildFullRequest(uint32_t event,
                                                  const std::string& session_id,
                                                  const nlohmann::json& payload);
+
+    // 构造 ChatTextQuery payload。该事件不是纯 TTS 接口，content 必须
+    // 包成明确的朗读指令，避免服务端把面试题当成候选人的技术提问回答。
+    static nlohmann::json BuildReadAloudTextQueryPayload(
+        const std::string& text);
 
     // 构造客户端 Audio Only 帧（PCM 原始字节）
     // - msg_type=kClientAudioOnlyRequest, flags=kMsgWithEvent, ser=kNone, compression=kNone
