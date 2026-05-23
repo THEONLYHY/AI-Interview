@@ -25,7 +25,13 @@ find_package(ZLIB REQUIRED)
 find_package(CURL REQUIRED)
 find_package(podofo CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(Qt6 COMPONENTS Core Widgets Gui REQUIRED)
+find_package(Qt6 COMPONENTS Core Widgets Gui Test REQUIRED)
+set(AI_INTERVIEW_QT_OFFSCREEN_PLUGIN_CONFIG
+    "${Qt6Gui_DIR}/Qt6QOffscreenIntegrationPluginConfig.cmake")
+if(NOT TARGET Qt6::QOffscreenIntegrationPlugin AND
+   EXISTS "${AI_INTERVIEW_QT_OFFSCREEN_PLUGIN_CONFIG}")
+    include("${AI_INTERVIEW_QT_OFFSCREEN_PLUGIN_CONFIG}")
+endif()
 
 if(AI_INTERVIEW_USE_SYSTEM_PORTAUDIO)
     find_package(PkgConfig REQUIRED)
@@ -141,9 +147,37 @@ if(AI_INTERVIEW_BUILD_TESTS)
         add_test(NAME ${test_name} COMMAND ${test_name})
     endfunction()
 
+    function(ai_interview_add_qt_test test_name source_file)
+        add_executable(${test_name}
+            ${source_file}
+            include/ui/config_dialog.h
+            include/ui/mainwindow.h
+            src/ui/config_dialog.cc
+            src/ui/mainwindow.cc
+        )
+        target_link_libraries(${test_name}
+            PRIVATE
+                ai_interview_core
+                Qt6::Core
+                Qt6::Widgets
+                Qt6::Gui
+                Qt6::Test
+        )
+        if(TARGET Qt6::QOffscreenIntegrationPlugin)
+            qt_import_plugins(${test_name}
+                INCLUDE Qt6::QOffscreenIntegrationPlugin)
+        endif()
+        ai_interview_apply_warnings(${test_name})
+        add_test(NAME ${test_name} COMMAND ${test_name})
+        set_tests_properties(${test_name}
+            PROPERTIES ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;XDG_CACHE_HOME=/tmp")
+    endfunction()
+
     ai_interview_add_test(protocol_smoke_test tests/protocol_smoke_test.cc)
     ai_interview_add_test(interview_session_test tests/interview_session_test.cc)
     ai_interview_add_test(dialog_session_regression_test
                           tests/dialog_session_regression_test.cc)
     ai_interview_add_test(audio_manager_test tests/audio_manager_test.cc)
+    ai_interview_add_qt_test(qt_ui_smoke_test tests/qt_ui_smoke_test.cc)
 endif()

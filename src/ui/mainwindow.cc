@@ -57,10 +57,11 @@ std::vector<interview::common::ParsedResponse> BuildMockScript(
         "Cleanup should unregister channels before closing descriptors.",
     };
 
-    const int answer_count = question_count * 2;
+    const int answer_count = question_count;
     const int reusable_answers = static_cast<int>(sizeof(answers) / sizeof(answers[0]));
     for (int i = 0; i < answer_count; ++i) {
         const char* answer = answers[i % reusable_answers];
+        script.push_back(MakeEvent(events::kTtsEnded, session_id));
         script.push_back(MakeEvent(events::kAsrInfo, session_id));
         script.push_back(MakeEvent(events::kAsrResult, session_id, answer));
         script.push_back(MakeEvent(events::kAsrEnded, session_id));

@@ -557,19 +557,10 @@ void DialogSession::OnServerEvent(const ParsedResponse& evt) {
 
     case events::kAsrResult:
         {
-            // payload_json 有两种来源,需要兼容:
-            //   - Mock 路径(main/dialog_session_realtime_demo_main.cc 等):
-            //     直接把裸 ASR 文本写到 payload_json,例如 "我熟悉 C++"。
-            //   - Real 路径(豆包 SAMI 实时对话):
-            //     payload_json 是服务端解 gzip 后的整段 JSON,
-            //     真实文本在 "text" 或 "results[0].text" 字段里。
-            // 先按 JSON 解析提取 text,失败或字段缺失再回退到把整段当裸文本,
-            // 这样不动 RealtimeClient 公共接口也能同时兼容两条路径。
             std::string asr_text = ExtractAsrText(evt.payload_json);
             LOG_DEBUG("[event] kAsrResult text='{}', raw={}",
                       asr_text, evt.payload_json);
             std::lock_guard<std::mutex> lock(data_mutex_);
-            // 常见实现为“当前整句覆盖”；若为增量需改为 +=
             current_asr_text_ = std::move(asr_text);
         }
         break;
