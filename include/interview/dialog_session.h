@@ -2,6 +2,7 @@
 #define INTERVIEW_DIALOGSESSION_H
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -95,7 +96,6 @@ private:
     void PlaybackLoop();
     void EnqueueTtsAudio(const std::vector<uint8_t>& pcm);
     void MarkTtsPlaybackDrained();
-    bool CanSendCandidateAudio() const;
     std::string SessionIdSnapshot() const;
 
     std::unique_ptr<InterviewSession> interview_session_;
@@ -121,6 +121,7 @@ private:
     std::atomic<bool> is_running_{false};
 
     std::atomic<bool> audio_threads_running_{false};
+    std::atomic<bool> is_playing_audio_{false};
     bool audio_enabled_ = false;
 
     // 录音线程只在候选人可说话窗口发送 kTaskRequest 音频帧; 
@@ -135,6 +136,8 @@ private:
     std::condition_variable tts_cv_;
     std::queue<std::vector<float>> tts_queue_;
     std::vector<uint8_t> tts_decode_remainder_;
+    std::size_t tts_playback_in_flight_ = 0;
+    bool tts_end_received_ = false;
 
     std::string session_id_;
     std::string current_asr_text_;

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <queue>
 #include <string>
 #include <utility>
 #include <vector>
@@ -171,6 +172,7 @@ void SpeakTextUsesLockedSessionSnapshot() {
     assert(content.find("hello") != std::string::npos);
     assert(content.find("不要回答") != std::string::npos);
     assert(content != "hello");
+    assert(dialog.is_playing_audio_.load());
 }
 
 void NonAudioSessionStartedImmediatelySpeaksFirstQuestion() {
@@ -207,6 +209,7 @@ void TtsEndedMarksPlaybackDrained() {
 
     dialog.interview_session_->Start();
     dialog.SetState(interview::common::DialogState::kInterviewerSpeaking);
+    dialog.is_playing_audio_.store(true);
     {
         std::lock_guard<std::mutex> lock(dialog.tts_mutex_);
         dialog.tts_decode_remainder_.push_back(0xAA);
@@ -215,7 +218,32 @@ void TtsEndedMarksPlaybackDrained() {
     dialog.OnServerEvent(MakeEvent(interview::common::events::kTtsEnded));
 
     assert(dialog.State() == interview::common::DialogState::kIdle);
+    assert(!dialog.is_playing_audio_.load());
     assert(dialog.tts_decode_remainder_.empty());
+}
+
+void TtsEndedWaitsForQueuedPlaybackBeforeUnmuting() {
+    auto realtime = std::make_unique<RecordingRealtimeClient>();
+    interview::session::DialogSession dialog(
+        MakeInterviewSession(), std::move(realtime), true);
+
+    dialog.audio_threads_running_.store(true);
+    dialog.SetState(interview::common::DialogState::kInterviewerSpeaking);
+    dialog.OnServerEvent(MakeTtsResponse(Float32LeBytes({0.25F})));
+    dialog.OnServerEvent(MakeEvent(interview::common::events::kTtsEnded));
+
+    assert(dialog.is_playing_audio_.load());
+    assert(dialog.State() == interview::common::DialogState::kInterviewerSpeaking);
+
+    {
+        std::lock_guard<std::mutex> lock(dialog.tts_mutex_);
+        std::queue<std::vector<float>> empty;
+        std::swap(dialog.tts_queue_, empty);
+    }
+    dialog.MarkTtsPlaybackDrained();
+
+    assert(!dialog.is_playing_audio_.load());
+    assert(dialog.State() == interview::common::DialogState::kIdle);
 }
 
 void AsrFinalizationProcessesAnswerImmediately() {
@@ -311,6 +339,7 @@ int main() {
     NonAudioSessionStartedImmediatelySpeaksFirstQuestion();
     AudioSessionStartedDefersFirstQuestionUntilAudioIsReady();
     TtsEndedMarksPlaybackDrained();
+    TtsEndedWaitsForQueuedPlaybackBeforeUnmuting();
     AsrFinalizationProcessesAnswerImmediately();
     ServerChatResponseDoesNotEmitInterviewerContent();
     TerminalEventsStopAudioThreads();

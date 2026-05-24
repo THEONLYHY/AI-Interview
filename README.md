@@ -88,8 +88,14 @@ Run a real microphone/speaker session:
 ./build/ai_interview_voice_cli --mock-llm
 ```
 
+```bash
+./build/ai_interview_voice_cli --mock-llm doc/resume.pdf
+```
+
 Use `--mock-llm` to keep the voice transport real while replacing the text LLM
 with deterministic questions. Omit it to use the configured real LLM endpoint.
+
+
 
 ## Qt UI
 
