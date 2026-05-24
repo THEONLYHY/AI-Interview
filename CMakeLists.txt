@@ -102,12 +102,6 @@ target_link_libraries(ai_interview_core
 
 ai_interview_apply_warnings(ai_interview_core)
 
-add_executable(ai_interview_text_pipeline
-    main/interview_text_pipeline_main.cc
-)
-target_link_libraries(ai_interview_text_pipeline PRIVATE ai_interview_core)
-ai_interview_apply_warnings(ai_interview_text_pipeline)
-
 add_executable(ai_interview_voice_cli
     main/interview_voice_cli_main.cc
 )

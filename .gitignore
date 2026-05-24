@@ -53,4 +53,5 @@ third_party/googletest/
 
 scripts/*.pcm
 scripts/*.mp3
-.codex/
+
+.codex

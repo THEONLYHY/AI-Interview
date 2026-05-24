@@ -4,6 +4,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "common/config.h"
@@ -115,6 +117,13 @@ void StartSessionPayloadUsesRealtimeNestedAudioConfigShape() {
     assert(system_role.find("read the exact text") != std::string::npos);
 }
 
+void AudioManagerOpenStreamsExposesBoolBoundary() {
+    static_assert(std::is_same_v<
+                  decltype(std::declval<interview::services::AudioManager&>()
+                               .OpenStreams()),
+                  bool>);
+}
+
 }  // namespace
 
 int main() {
@@ -122,5 +131,6 @@ int main() {
     Pcm16LeLevelReportsPeakAndRms();
     NestedAudioConfigLoadsArchiveShape();
     StartSessionPayloadUsesRealtimeNestedAudioConfigShape();
+    AudioManagerOpenStreamsExposesBoolBoundary();
     return 0;
 }

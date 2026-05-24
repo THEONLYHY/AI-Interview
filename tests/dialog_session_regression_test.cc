@@ -1,10 +1,13 @@
 ﻿#include <cassert>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <queue>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -330,6 +333,27 @@ void StartDoesNotConnectAfterInterviewSessionMissing() {
     assert(dialog.State() == interview::common::DialogState::kStopped);
 }
 
+void RunEventDrivenWaitsUntilTerminalEvent() {
+    interview::session::DialogSession dialog(
+        MakeInterviewSession(), nullptr, false);
+    dialog.Start();
+
+    std::atomic<bool> returned{false};
+    std::thread runner([&] {
+        dialog.RunEventDriven();
+        returned.store(true);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    assert(!returned.load());
+
+    dialog.OnServerEvent(MakeEvent(interview::common::events::kSessionFinished));
+    runner.join();
+
+    assert(returned.load());
+    assert(dialog.State() == interview::common::DialogState::kCompleted);
+}
+
 }  // namespace
 
 int main() {
@@ -345,5 +369,6 @@ int main() {
     TerminalEventsStopAudioThreads();
     StartStopsWhenRealtimeConnectFails();
     StartDoesNotConnectAfterInterviewSessionMissing();
+    RunEventDrivenWaitsUntilTerminalEvent();
     return 0;
 }

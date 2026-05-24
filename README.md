@@ -1,10 +1,8 @@
 # AI Interview
 
-A C++17 interview practice application with three frontends over the same
+A C++17 interview practice application with two frontends over the same
 business layer:
 
-- `ai_interview_text_pipeline`: text pipeline, mock interview flow, and real
-  WebSocket smoke testing.
 - `ai_interview_voice_cli`: microphone/speaker CLI for real-time voice
   sessions.
 - `ai_interview_qt`: Qt Widgets shell for selecting a resume and running a
@@ -50,24 +48,6 @@ generation, dialog session state/TTS behavior, and PCM conversion helpers.
 running real service flows.
 
 Do not commit `config/local_config.json`.
-
-## Text Pipeline
-
-Run a mock LLM flow with a resume PDF:
-
-```bash
-./build/ai_interview_text_pipeline --mock-llm ./doc/resume.pdf
-```
-
-Run the mock flow with resume text from standard input:
-
-```bash
-./build/ai_interview_text_pipeline --stdin --mock-llm
-```
-
-`--mock-llm` only replaces the LLM client. It is not a promise that every
-runtime dependency is offline unless the selected mode also uses mock realtime
-events.
 
 ## Real WebSocket Smoke
 
