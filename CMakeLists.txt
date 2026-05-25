@@ -119,8 +119,13 @@ add_executable(ai_interview_qt
     main/main_qt.cc
     include/ui/config_dialog.h
     include/ui/mainwindow.h
+    include/ui/session_factory.h
+    include/ui/session_options.h
+    include/ui/session_worker.h
     src/ui/config_dialog.cc
     src/ui/mainwindow.cc
+    src/ui/session_factory.cc
+    src/ui/session_worker.cc
 )
 target_link_libraries(ai_interview_qt
     PRIVATE
@@ -129,6 +134,10 @@ target_link_libraries(ai_interview_qt
         Qt6::Widgets
         Qt6::Gui
 )
+if(TARGET Qt6::QOffscreenIntegrationPlugin)
+    qt_import_plugins(ai_interview_qt
+        INCLUDE Qt6::QOffscreenIntegrationPlugin)
+endif()
 ai_interview_apply_warnings(ai_interview_qt)
 
 if(AI_INTERVIEW_BUILD_TESTS)
@@ -146,8 +155,13 @@ if(AI_INTERVIEW_BUILD_TESTS)
             ${source_file}
             include/ui/config_dialog.h
             include/ui/mainwindow.h
+            include/ui/session_factory.h
+            include/ui/session_options.h
+            include/ui/session_worker.h
             src/ui/config_dialog.cc
             src/ui/mainwindow.cc
+            src/ui/session_factory.cc
+            src/ui/session_worker.cc
         )
         target_link_libraries(${test_name}
             PRIVATE

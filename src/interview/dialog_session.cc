@@ -722,13 +722,9 @@ void DialogSession::StopAudioThread() {
     // exchange(false) 通知两个音频线程退出，并记录之前是否真的在运行。
     const bool was_running = audio_threads_running_.exchange(false);
 
-    // 唤醒可能阻塞在条件变量上的播放线程。
+    // 唤醒可能阻塞在条件变量上的播放线程。PortAudio 流必须在线程退出
+    // 后再关闭，避免 Stop/Close 与阻塞 Read/Write 并发访问同一 stream。
     tts_cv_.notify_all();
-    if (audio_manager_) {
-        // 停止 PortAudio 流会帮助 ReadAudio/WriteAudio 尽快返回。
-        audio_manager_->StopInput();
-        audio_manager_->StopOutput();
-    }
 
     // 等待录音线程退出，避免销毁 audio_manager_ 后仍读麦克风。
     if (recording_thread_.joinable()) {
@@ -738,6 +734,11 @@ void DialogSession::StopAudioThread() {
     // 等待播放线程退出，避免销毁 audio_manager_ 后仍写扬声器。
     if (playback_thread_.joinable()) {
         playback_thread_.join();
+    }
+
+    if (audio_manager_) {
+        audio_manager_->StopInput();
+        audio_manager_->StopOutput();
     }
 
     {

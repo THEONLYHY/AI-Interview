@@ -2,20 +2,26 @@
 
 #include <QApplication>
 #include <QByteArray>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
+#include <QLabel>
 #include <QLineEdit>
-#include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QSpinBox>
 #include <QTest>
+#include <QTextEdit>
 #include <QTimer>
 
 #include "common/logger.h"
 #include "ui/config_dialog.h"
 #include "ui/mainwindow.h"
+#include "ui/session_options.h"
 
 namespace {
 
@@ -50,7 +56,8 @@ void QueueAcceptSessionDialog(int question_count) {
             qFatal("session dialog did not open");
         }
 
-        auto* question_count_spin = dialog->findChild<QSpinBox*>();
+        auto* question_count_spin =
+            dialog->findChild<QSpinBox*>(QStringLiteral("questionCountSpin"));
         if (question_count_spin == nullptr) {
             qFatal("session dialog has no question count spin box");
         }
@@ -75,20 +82,117 @@ private slots:
     void ConfigDialogDefaultsUseMockTextSession() {
         interview::ui::ConfigDialog dialog;
 
-        auto* resume_path = dialog.findChild<QLineEdit*>();
-        auto* question_count = dialog.findChild<QSpinBox*>();
+        auto* candidate_name =
+            dialog.findChild<QLineEdit*>(QStringLiteral("candidateNameEdit"));
+        auto* use_resume =
+            dialog.findChild<QCheckBox*>(QStringLiteral("useResumeCheckBox"));
+        auto* resume_path =
+            dialog.findChild<QLineEdit*>(QStringLiteral("resumePathEdit"));
+        auto* question_count =
+            dialog.findChild<QSpinBox*>(QStringLiteral("questionCountSpin"));
+        auto* llm_mode =
+            dialog.findChild<QComboBox*>(QStringLiteral("llmModeCombo"));
+        auto* realtime_mode =
+            dialog.findChild<QComboBox*>(QStringLiteral("realtimeModeCombo"));
+        auto* input_mode =
+            dialog.findChild<QComboBox*>(QStringLiteral("inputModeCombo"));
+        auto* config_path =
+            dialog.findChild<QLineEdit*>(QStringLiteral("configPathEdit"));
 
+        QVERIFY(candidate_name != nullptr);
+        QVERIFY(use_resume != nullptr);
         QVERIFY(resume_path != nullptr);
         QVERIFY(question_count != nullptr);
+        QVERIFY(llm_mode != nullptr);
+        QVERIFY(realtime_mode != nullptr);
+        QVERIFY(input_mode != nullptr);
+        QVERIFY(config_path != nullptr);
+
+        QCOMPARE(candidate_name->text(), QStringLiteral("Candidate"));
+        QVERIFY(!use_resume->isChecked());
         QCOMPARE(question_count->minimum(), 1);
         QCOMPARE(question_count->maximum(), 10);
         QCOMPARE(question_count->value(), 3);
+        QCOMPARE(config_path->text(), QStringLiteral("config/local_config.json"));
 
-        const interview::ui::SessionOption options = dialog.Options();
+        const interview::ui::SessionOptions options = dialog.Options();
+        QCOMPARE(options.candidate_name, QStringLiteral("Candidate"));
         QCOMPARE(options.resume_pdf_path, QString());
         QCOMPARE(options.question_count, 3);
-        QVERIFY(options.use_mock_llm);
-        QVERIFY(!options.use_voice_mode);
+        QCOMPARE(options.config_path, QStringLiteral("config/local_config.json"));
+        QCOMPARE(options.llm_mode, interview::ui::LlmMode::kMock);
+        QCOMPARE(options.realtime_mode, interview::ui::RealtimeMode::kMockScript);
+        QCOMPARE(options.input_mode, interview::ui::InputMode::kTextMock);
+    }
+
+    void ConfigDialogRequiresResumePathOnlyWhenEnabled() {
+        interview::ui::ConfigDialog dialog;
+        dialog.show();
+
+        auto* use_resume =
+            dialog.findChild<QCheckBox*>(QStringLiteral("useResumeCheckBox"));
+        auto* resume_path =
+            dialog.findChild<QLineEdit*>(QStringLiteral("resumePathEdit"));
+        auto* error_label =
+            dialog.findChild<QLabel*>(QStringLiteral("validationErrorLabel"));
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+
+        QVERIFY(use_resume != nullptr);
+        QVERIFY(resume_path != nullptr);
+        QVERIFY(error_label != nullptr);
+        QVERIFY(buttons != nullptr);
+
+        use_resume->setChecked(true);
+        resume_path->clear();
+
+        QSignalSpy accepted(&dialog, &QDialog::accepted);
+        buttons->button(QDialogButtonBox::Ok)->click();
+
+        QCOMPARE(accepted.count(), 0);
+        QVERIFY(dialog.isVisible());
+        QVERIFY2(error_label->text().contains(QStringLiteral("resume PDF")),
+                 qPrintable(error_label->text()));
+    }
+
+    void ConfigDialogRequiresConfigForRealOrVoiceModes() {
+        interview::ui::ConfigDialog dialog;
+        dialog.show();
+
+        auto* llm_mode =
+            dialog.findChild<QComboBox*>(QStringLiteral("llmModeCombo"));
+        auto* input_mode =
+            dialog.findChild<QComboBox*>(QStringLiteral("inputModeCombo"));
+        auto* config_path =
+            dialog.findChild<QLineEdit*>(QStringLiteral("configPathEdit"));
+        auto* error_label =
+            dialog.findChild<QLabel*>(QStringLiteral("validationErrorLabel"));
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+
+        QVERIFY(llm_mode != nullptr);
+        QVERIFY(input_mode != nullptr);
+        QVERIFY(config_path != nullptr);
+        QVERIFY(error_label != nullptr);
+        QVERIFY(buttons != nullptr);
+
+        llm_mode->setCurrentText(QStringLiteral("Real LLM"));
+        input_mode->setCurrentText(QStringLiteral("Voice"));
+        config_path->setText(QStringLiteral("/tmp/ai_interview_config.json"));
+
+        const interview::ui::SessionOptions options = dialog.Options();
+        QCOMPARE(options.config_path,
+                 QStringLiteral("/tmp/ai_interview_config.json"));
+        QCOMPARE(options.llm_mode, interview::ui::LlmMode::kReal);
+        QCOMPARE(options.input_mode, interview::ui::InputMode::kVoice);
+
+        config_path->clear();
+
+        QSignalSpy accepted(&dialog, &QDialog::accepted);
+        buttons->button(QDialogButtonBox::Ok)->click();
+
+        QCOMPARE(accepted.count(), 0);
+        QVERIFY(dialog.isVisible());
+        QVERIFY2(error_label->text().contains(QStringLiteral("config")),
+                 qPrintable(error_label->text()));
     }
 
     void MainWindowRunsMockInterviewOffscreen() {
@@ -96,11 +200,15 @@ private slots:
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
 
-        auto* transcript = window.findChild<QPlainTextEdit*>();
+        auto* transcript =
+            window.findChild<QTextEdit*>(QStringLiteral("transcriptView"));
+        auto* progress =
+            window.findChild<QProgressBar*>(QStringLiteral("questionProgress"));
         auto* start_button = FindButtonByText(window, QStringLiteral("Start"));
         auto* stop_button = FindButtonByText(window, QStringLiteral("Stop"));
 
         QVERIFY(transcript != nullptr);
+        QVERIFY(progress != nullptr);
         QVERIFY(start_button != nullptr);
         QVERIFY(stop_button != nullptr);
         QVERIFY(start_button->isEnabled());
@@ -128,8 +236,35 @@ private slots:
                  qPrintable(text));
         QVERIFY2(text.contains(QStringLiteral("summary:")),
                  qPrintable(text));
+        QCOMPARE(progress->maximum(), 1);
+        QCOMPARE(progress->value(), 1);
         QVERIFY(start_button->isEnabled());
         QVERIFY(!stop_button->isEnabled());
+    }
+
+    void MainWindowStopRestoresButtons() {
+        interview::ui::MainWindow window;
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+        auto* start_button = FindButtonByText(window, QStringLiteral("Start"));
+        auto* stop_button = FindButtonByText(window, QStringLiteral("Stop"));
+
+        QVERIFY(start_button != nullptr);
+        QVERIFY(stop_button != nullptr);
+
+        QueueAcceptSessionDialog(3);
+        QTest::mouseClick(start_button, Qt::LeftButton);
+
+        QVERIFY(WaitFor([stop_button] { return stop_button->isEnabled(); },
+                        1000));
+        QTest::mouseClick(stop_button, Qt::LeftButton);
+
+        QVERIFY(WaitFor(
+            [start_button, stop_button] {
+                return start_button->isEnabled() && !stop_button->isEnabled();
+            },
+            3000));
     }
 };
 

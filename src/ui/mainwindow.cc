@@ -1,199 +1,259 @@
 #include "ui/mainwindow.h"
 
-#include <chrono>
-#include <memory>
-#include <string>
-#include <utility>
-#include <vector>
+#include <algorithm>
 
+#include <QAction>
+#include <QDialog>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QMenuBar>
 #include <QMetaObject>
-#include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QStatusBar>
+#include <QTextEdit>
+#include <QThread>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include "common/logger.h"
-#include "common/protocol.h"
-#include "interview/dialog_session.h"
-#include "interview/interview_session.h"
-#include "services/pdf_parser.h"
-#include "services/mock_llm_client.h"
-#include "services/mock_realtime_client.h"
 #include "ui/config_dialog.h"
+#include "ui/session_worker.h"
 
 namespace interview::ui {
-
 namespace {
 
-interview::common::ParsedResponse MakeEvent(uint32_t event_id,
-                                            std::string session_id = {},
-                                            std::string payload_json = {}) {
-    interview::common::ParsedResponse event;
-    event.event = event_id;
-    event.session_id = std::move(session_id);
-    event.payload_json = std::move(payload_json);
-    return event;
+QString RoleColor(const QString& role) {
+    const QString normalized = role.toLower();
+    if (normalized == QStringLiteral("system")) {
+        return QStringLiteral("#51606a");
+    }
+    if (normalized == QStringLiteral("error")) {
+        return QStringLiteral("#b00020");
+    }
+    if (normalized == QStringLiteral("question")) {
+        return QStringLiteral("#0f5c8c");
+    }
+    if (normalized == QStringLiteral("followup")) {
+        return QStringLiteral("#6c4f00");
+    }
+    if (normalized == QStringLiteral("candidate")) {
+        return QStringLiteral("#247a4d");
+    }
+    if (normalized == QStringLiteral("feedback")) {
+        return QStringLiteral("#7a3f89");
+    }
+    if (normalized == QStringLiteral("summary")) {
+        return QStringLiteral("#2f5d62");
+    }
+    return QStringLiteral("#303030");
 }
 
-std::vector<interview::common::ParsedResponse> BuildMockScript(
-    const std::string& session_id,
-    int question_count) {
-    namespace events = interview::common::events;
-
-    std::vector<interview::common::ParsedResponse> script;
-    script.push_back(MakeEvent(events::kConnectionStarted));
-    script.back().connect_id = "qt-mock-connect";
-    script.push_back(MakeEvent(events::kSessionStarted, session_id));
-
-    const char* answers[] = {
-        "I use RAII to bind resource lifetime to object lifetime.",
-        "Smart pointers express ownership and release memory automatically.",
-        "Epoll scales better because it reports ready descriptors directly.",
-        "A worker queue can distribute accepted sockets to event loops.",
-        "Channel stores fd interests and dispatches callbacks in an EventLoop.",
-        "Cleanup should unregister channels before closing descriptors.",
-    };
-
-    const int answer_count = question_count;
-    const int reusable_answers = static_cast<int>(sizeof(answers) / sizeof(answers[0]));
-    for (int i = 0; i < answer_count; ++i) {
-        const char* answer = answers[i % reusable_answers];
-        script.push_back(MakeEvent(events::kTtsEnded, session_id));
-        script.push_back(MakeEvent(events::kAsrInfo, session_id));
-        script.push_back(MakeEvent(events::kAsrResult, session_id, answer));
-        script.push_back(MakeEvent(events::kAsrEnded, session_id));
+QString RoleLabel(const QString& role, int question_index) {
+    QString label = role.toLower();
+    if (question_index > 0) {
+        label += QStringLiteral(" #") + QString::number(question_index);
     }
-    script.push_back(MakeEvent(events::kSessionFinished, session_id));
-    return script;
+    return label;
 }
 
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
-      transcript_(new QPlainTextEdit(this)),
+      transcript_(new QTextEdit(this)),
       state_label_(new QLabel(this)),
       start_button_(new QPushButton(tr("Start"), this)),
-      stop_button_(new QPushButton(tr("Stop"), this)) {
+      stop_button_(new QPushButton(tr("Stop"), this)),
+      start_action_(new QAction(tr("Start"), this)),
+      stop_action_(new QAction(tr("Stop"), this)),
+      progress_bar_(new QProgressBar(this)) {
     setWindowTitle(tr("AI Interview"));
-    resize(900, 620);
+    resize(2000, 1200);
+
+    transcript_->setObjectName(QStringLiteral("transcriptView"));
+    state_label_->setObjectName(QStringLiteral("stateLabel"));
+    start_button_->setObjectName(QStringLiteral("startButton"));
+    stop_button_->setObjectName(QStringLiteral("stopButton"));
+    progress_bar_->setObjectName(QStringLiteral("questionProgress"));
 
     transcript_->setReadOnly(true);
+    transcript_->setAcceptRichText(false);
+    progress_bar_->setRange(0, 3);
+    progress_bar_->setValue(0);
+    stop_button_->setEnabled(false);
+
+    auto* session_menu = menuBar()->addMenu(tr("Session"));
+    session_menu->addAction(start_action_);
+    session_menu->addAction(stop_action_);
+    stop_action_->setEnabled(false);
+    session_menu->addSeparator();
+    session_menu->addAction(tr("Quit"), this, &QWidget::close);
 
     auto* toolbar = addToolBar(tr("Session"));
     toolbar->addWidget(start_button_);
     toolbar->addWidget(stop_button_);
-    stop_button_->setEnabled(false);
 
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
-    layout->addWidget(transcript_);
+
+    auto* status_row = new QHBoxLayout;
+    status_row->addWidget(new QLabel(tr("State:"), this));
+    status_row->addWidget(state_label_);
+    status_row->addStretch(1);
+    layout->addLayout(status_row);
+    layout->addWidget(transcript_, 1);
+    layout->addWidget(progress_bar_);
     setCentralWidget(central);
 
-    statusBar()->addPermanentWidget(state_label_);
+    statusBar()->showMessage(tr("Ready"));
     UpdateState(interview::common::DialogState::kInit);
 
     connect(start_button_, &QPushButton::clicked,
-            this, &MainWindow::StartMockInterview);
+            this, &MainWindow::StartInterview);
     connect(stop_button_, &QPushButton::clicked,
+            this, &MainWindow::StopInterview);
+    connect(start_action_, &QAction::triggered,
+            this, &MainWindow::StartInterview);
+    connect(stop_action_, &QAction::triggered,
             this, &MainWindow::StopInterview);
 }
 
 MainWindow::~MainWindow() {
-    StopInterview();
+    ShutdownWorker(true);
 }
 
-void MainWindow::StartMockInterview() {
+void MainWindow::StartInterview() {
     ConfigDialog config_dialog(this);
     if (config_dialog.exec() != QDialog::Accepted) {
         return;
     }
-    const SessionOption options = config_dialog.Options();
+    const SessionOptions options = config_dialog.Options();
 
-    StopInterview();
+    ShutdownWorker(true);
     transcript_->clear();
+    question_count_ = std::max(1, options.question_count);
+    progress_bar_->setRange(0, question_count_);
+    progress_bar_->setValue(0);
+    SetRunningControls(true);
+    statusBar()->showMessage(tr("Starting interview"));
 
-    std::string resume_text;
-    const std::string resume_path = options.resume_pdf_path.toStdString();
-    if (!resume_path.empty()) {
-        services::PDFParser parser;
-        if (parser.IsValidPDF(resume_path)) {
-            resume_text = parser.ExtractText(resume_path);
-            transcript_->appendPlainText(
-                tr("System: loaded resume PDF, chars=%1")
-                    .arg(static_cast<qlonglong>(resume_text.size())));
-        } else {
-            transcript_->appendPlainText(
-                tr("System: resume PDF was not valid, continuing without it."));
-        }
-    }
+    auto* thread = new QThread(this);
+    auto* worker = new SessionWorker;
+    worker->moveToThread(thread);
+    worker_thread_ = thread;
+    worker_ = worker;
 
-    auto interview_session =
-        std::make_unique<interview::session::InterviewSession>(
-            std::make_unique<interview::services::MockLLMClient>(),
-            std::move(resume_text),
-            options.question_count);
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(worker, &SessionWorker::ContentReceived,
+            this, &MainWindow::AppendContent);
+    connect(worker, &SessionWorker::StateChanged,
+            this, &MainWindow::UpdateState);
+    connect(worker, &SessionWorker::Failed,
+            this, &MainWindow::HandleFailure);
+    connect(worker, &SessionWorker::Stopped,
+            this, &MainWindow::HandleStopped);
 
-    auto realtime_client =
-        std::make_unique<interview::services::MockRealtimeClient>(
-            BuildMockScript("qt-mock-session", options.question_count),
-            std::chrono::milliseconds(250));
-
-    dialog_ = std::make_unique<interview::session::DialogSession>(
-        std::move(interview_session), std::move(realtime_client), false);
-
-    dialog_->SetContentCallback(
-        [this](const std::string& role, const std::string& text,
-               int question_index) {
-            QMetaObject::invokeMethod(
-                this,
-                [this, role = QString::fromStdString(role),
-                 text = QString::fromStdString(text), question_index] {
-                    AppendContent(role, text, question_index);
-                },
-                Qt::QueuedConnection);
-        });
-
-    dialog_->SetStateCallback([this](interview::common::DialogState state) {
-        QMetaObject::invokeMethod(
-            this, [this, state] { UpdateState(state); }, Qt::QueuedConnection);
-    });
-
-    dialog_->Start();
-    start_button_->setEnabled(false);
-    stop_button_->setEnabled(true);
+    thread->start();
+    QMetaObject::invokeMethod(
+        worker,
+        [worker, options] {
+            worker->Start(options);
+        },
+        Qt::QueuedConnection);
 }
 
 void MainWindow::StopInterview() {
-    if (dialog_) {
-        dialog_->Stop();
-        dialog_.reset();
+    if (!worker_) {
+        SetRunningControls(false);
+        return;
     }
-    start_button_->setEnabled(true);
+    start_button_->setEnabled(false);
     stop_button_->setEnabled(false);
+    statusBar()->showMessage(tr("Stopping interview"));
+    QMetaObject::invokeMethod(worker_.data(), &SessionWorker::Stop,
+                              Qt::QueuedConnection);
 }
 
 void MainWindow::AppendContent(const QString& role,
                                const QString& text,
                                int question_index) {
-    QString prefix = role;
-    if (question_index >= 0) {
-        prefix += QStringLiteral(" #") + QString::number(question_index);
+    if (question_index > 0) {
+        progress_bar_->setValue(std::min(question_index, question_count_));
     }
-    transcript_->appendPlainText(prefix + QStringLiteral(": ") + text);
+
+    const QString label = RoleLabel(role, question_index).toHtmlEscaped();
+    QString body = text.toHtmlEscaped();
+    body.replace(QStringLiteral("\n"), QStringLiteral("<br>"));
+
+    transcript_->append(
+        QStringLiteral(
+            "<p style=\"margin:6px 0;\"><span style=\"color:%1;"
+            "font-weight:600;\">%2:</span> %3</p>")
+            .arg(RoleColor(role), label, body));
 }
 
 void MainWindow::UpdateState(interview::common::DialogState state) {
     state_label_->setText(QString::fromStdString(
         interview::common::DialogStateToString(state)));
-    if (state == interview::common::DialogState::kCompleted ||
-        state == interview::common::DialogState::kStopped) {
-        start_button_->setEnabled(true);
-        stop_button_->setEnabled(false);
+
+    if (state == interview::common::DialogState::kCompleted) {
+        SetRunningControls(false);
+        statusBar()->showMessage(tr("Interview complete"));
+        FinishWorker(false);
+    } else if (state == interview::common::DialogState::kStopped) {
+        SetRunningControls(false);
+        statusBar()->showMessage(tr("Interview stopped"));
     }
+}
+
+void MainWindow::HandleFailure(const QString& message) {
+    AppendContent(QStringLiteral("error"), message, -1);
+    SetRunningControls(false);
+    statusBar()->showMessage(message);
+    FinishWorker(false);
+}
+
+void MainWindow::HandleStopped() {
+    SetRunningControls(false);
+    statusBar()->showMessage(tr("Interview stopped"));
+    FinishWorker(false);
+}
+
+void MainWindow::FinishWorker(bool wait) {
+    if (!worker_thread_) {
+        worker_ = nullptr;
+        return;
+    }
+
+    QThread* thread = worker_thread_;
+    worker_ = nullptr;
+    worker_thread_ = nullptr;
+    thread->quit();
+    if (wait && thread != QThread::currentThread()) {
+        thread->wait(5000);
+    }
+}
+
+void MainWindow::ShutdownWorker(bool wait) {
+    if (worker_ && worker_thread_ && worker_thread_->isRunning()) {
+        const Qt::ConnectionType connection_type =
+            wait && worker_thread_.data() != QThread::currentThread()
+                ? Qt::BlockingQueuedConnection
+                : Qt::QueuedConnection;
+        QMetaObject::invokeMethod(worker_.data(), &SessionWorker::Stop,
+                                  connection_type);
+    }
+    FinishWorker(wait);
+    SetRunningControls(false);
+}
+
+void MainWindow::SetRunningControls(bool running) {
+    start_button_->setEnabled(!running);
+    stop_button_->setEnabled(running);
+    start_action_->setEnabled(!running);
+    stop_action_->setEnabled(running);
 }
 
 }  // namespace interview::ui
